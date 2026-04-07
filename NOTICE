@@ -1,0 +1,10 @@
+checker-sdk-go
+Copyright 2020-2026 The happyDomain Authors
+
+This product includes software developed as part of the happyDomain project
+(https://happydomain.org).
+
+Portions of this code were originally written for the happyDomain server
+(licensed under AGPL-3.0 and a commercial license) and are made available
+here under the Apache License, Version 2.0 to enable a permissively licensed
+ecosystem of checker plugins.
