@@ -155,15 +155,21 @@ type CheckerOptionsDocumentation struct {
 }
 
 // Status represents the result status of a check evaluation.
+//
+// Numeric ordering is severity ordering: lower = better, higher = worse.
+// StatusUnknown is intentionally the zero value, so an uninitialized
+// CheckState reads as "no signal yet" rather than as a healthy OK.
+// "Good" statuses are negative so that aggregators can simply take the
+// max() of a set of statuses to compute the worst one.
 type Status int
 
 const (
-	StatusUnknown Status = iota
-	StatusOK
-	StatusInfo
-	StatusWarn
-	StatusCrit
-	StatusError
+	StatusOK      Status = -2
+	StatusInfo    Status = -1
+	StatusUnknown Status = 0 // zero value: not initialized / no signal yet
+	StatusWarn    Status = 1
+	StatusCrit    Status = 2
+	StatusError   Status = 3
 )
 
 // String returns the human-readable name of the status.
@@ -184,6 +190,46 @@ func (s Status) String() string {
 	default:
 		return fmt.Sprintf("Status(%d)", int(s))
 	}
+}
+
+// MarshalJSON serializes Status as its string name so the wire format
+// is stable across any future reordering of the underlying int values.
+func (s Status) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON accepts either the string name (preferred) or a raw int
+// (for backward compatibility with older clients/snapshots).
+func (s *Status) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var name string
+		if err := json.Unmarshal(data, &name); err != nil {
+			return err
+		}
+		switch name {
+		case "OK":
+			*s = StatusOK
+		case "INFO":
+			*s = StatusInfo
+		case "UNKNOWN", "":
+			*s = StatusUnknown
+		case "WARN":
+			*s = StatusWarn
+		case "CRIT":
+			*s = StatusCrit
+		case "ERROR":
+			*s = StatusError
+		default:
+			return fmt.Errorf("unknown status %q", name)
+		}
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*s = Status(n)
+	return nil
 }
 
 // CheckState is the result of evaluating a single rule.
