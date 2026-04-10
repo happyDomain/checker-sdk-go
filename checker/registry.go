@@ -33,6 +33,10 @@ var observationProviderRegistry = map[ObservationKey]ObservationProvider{}
 // always indicates a deployment mistake (two plugins shipping the same
 // checker, or a plugin shadowing a built-in).
 func RegisterChecker(c *CheckerDefinition) {
+	if c.ID == "" {
+		log.Println("Warning: refusing to register checker with empty ID")
+		return
+	}
 	if _, exists := checkerRegistry[c.ID]; exists {
 		log.Printf("Warning: checker %q is already registered; ignoring duplicate registration", c.ID)
 		return
