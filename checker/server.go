@@ -33,6 +33,10 @@ const maxRequestBodySize = 1 << 20
 // CheckerDefinitionProvider, it also exposes /definition and /evaluate.
 // If the provider implements CheckerHTMLReporter or CheckerMetricsReporter,
 // it also exposes /report.
+//
+// Security: Server does not perform any authentication or authorization.
+// It is intended to be run behind a reverse proxy or in a trusted network
+// where access control is handled externally (e.g. by the happyDomain server).
 type Server struct {
 	provider   ObservationProvider
 	definition *CheckerDefinition
