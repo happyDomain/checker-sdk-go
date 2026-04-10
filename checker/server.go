@@ -18,11 +18,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// maxRequestBodySize is the maximum allowed size for incoming request bodies (1 MB).
+const maxRequestBodySize = 1 << 20
 
 // Server is a generic HTTP server for external checkers.
 // It always exposes /health and /collect. If the provider implements
@@ -101,7 +105,7 @@ func (s *Server) handleDefinition(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 	var req ExternalCollectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ExternalCollectResponse{
 			Error: fmt.Sprintf("invalid request body: %v", err),
 		})
@@ -131,7 +135,7 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	var req ExternalEvaluateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ExternalEvaluateResponse{
 			Error: fmt.Sprintf("invalid request body: %v", err),
 		})
@@ -159,7 +163,7 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	var req ExternalReportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": fmt.Sprintf("invalid request body: %v", err),
 		})
