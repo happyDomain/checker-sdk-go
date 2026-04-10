@@ -22,6 +22,9 @@ import (
 // resetRegistries clears the global registries between tests so that one
 // test's registration cannot leak into the next. The package-level maps are
 // the only shared state.
+//
+// Tests in this package MUST NOT use t.Parallel() because they mutate
+// these shared maps without synchronization.
 func resetRegistries() {
 	checkerRegistry = map[string]*CheckerDefinition{}
 	observationProviderRegistry = map[ObservationKey]ObservationProvider{}
