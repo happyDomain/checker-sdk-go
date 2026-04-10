@@ -114,7 +114,7 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 
 	data, err := s.provider.Collect(r.Context(), req.Options)
 	if err != nil {
-		writeJSON(w, http.StatusOK, ExternalCollectResponse{
+		writeJSON(w, http.StatusInternalServerError, ExternalCollectResponse{
 			Error: err.Error(),
 		})
 		return
@@ -122,7 +122,7 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := json.Marshal(data)
 	if err != nil {
-		writeJSON(w, http.StatusOK, ExternalCollectResponse{
+		writeJSON(w, http.StatusInternalServerError, ExternalCollectResponse{
 			Error: fmt.Sprintf("failed to marshal result: %v", err),
 		})
 		return

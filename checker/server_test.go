@@ -143,8 +143,8 @@ func TestServer_Collect_ProviderError(t *testing.T) {
 	}
 	srv := newTestServer(p)
 	rec := doRequest(srv.Handler(), "POST", "/collect", ExternalCollectRequest{Key: "test"}, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /collect = %d, want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /collect = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 	var resp ExternalCollectResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
