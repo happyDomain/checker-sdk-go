@@ -192,46 +192,6 @@ func (s Status) String() string {
 	}
 }
 
-// MarshalJSON serializes Status as its string name so the wire format
-// is stable across any future reordering of the underlying int values.
-func (s Status) MarshalJSON() ([]byte, error) {
-	return json.Marshal(s.String())
-}
-
-// UnmarshalJSON accepts either the string name (preferred) or a raw int
-// (for backward compatibility with older clients/snapshots).
-func (s *Status) UnmarshalJSON(data []byte) error {
-	if len(data) > 0 && data[0] == '"' {
-		var name string
-		if err := json.Unmarshal(data, &name); err != nil {
-			return err
-		}
-		switch name {
-		case "OK":
-			*s = StatusOK
-		case "INFO":
-			*s = StatusInfo
-		case "UNKNOWN", "":
-			*s = StatusUnknown
-		case "WARN":
-			*s = StatusWarn
-		case "CRIT":
-			*s = StatusCrit
-		case "ERROR":
-			*s = StatusError
-		default:
-			return fmt.Errorf("unknown status %q", name)
-		}
-		return nil
-	}
-	var n int
-	if err := json.Unmarshal(data, &n); err != nil {
-		return err
-	}
-	*s = Status(n)
-	return nil
-}
-
 // CheckState is the result of evaluating a single rule.
 type CheckState struct {
 	Status  Status         `json:"status"`
