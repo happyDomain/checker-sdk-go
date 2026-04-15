@@ -146,21 +146,15 @@ type CheckerOptionsDocumentation struct {
 }
 
 // Status represents the result status of a check evaluation.
-//
-// Numeric ordering is severity ordering: lower = better, higher = worse.
-// StatusUnknown is intentionally the zero value, so an uninitialized
-// CheckState reads as "no signal yet" rather than as a healthy OK.
-// "Good" statuses are negative so that aggregators can simply take the
-// max() of a set of statuses to compute the worst one.
 type Status int
 
 const (
-	StatusOK      Status = -2
-	StatusInfo    Status = -1
-	StatusUnknown Status = 0 // zero value: not initialized / no signal yet
-	StatusWarn    Status = 1
-	StatusCrit    Status = 2
-	StatusError   Status = 3
+	StatusUnknown Status = iota
+	StatusOK
+	StatusInfo
+	StatusWarn
+	StatusCrit
+	StatusError
 )
 
 // String returns the human-readable name of the status.

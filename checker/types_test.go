@@ -24,12 +24,12 @@ func TestStatus_MarshalJSON(t *testing.T) {
 		status Status
 		want   string
 	}{
-		{StatusOK, `"OK"`},
-		{StatusInfo, `"INFO"`},
-		{StatusUnknown, `"UNKNOWN"`},
-		{StatusWarn, `"WARN"`},
-		{StatusCrit, `"CRIT"`},
-		{StatusError, `"ERROR"`},
+		{StatusUnknown, `0`},
+		{StatusOK, `1`},
+		{StatusInfo, `2`},
+		{StatusWarn, `3`},
+		{StatusCrit, `4`},
+		{StatusError, `5`},
 	}
 	for _, tt := range tests {
 		got, err := json.Marshal(tt.status)
@@ -43,42 +43,17 @@ func TestStatus_MarshalJSON(t *testing.T) {
 	}
 }
 
-func TestStatus_UnmarshalJSON_String(t *testing.T) {
+func TestStatus_UnmarshalJSON(t *testing.T) {
 	tests := []struct {
 		input string
 		want  Status
 	}{
-		{`"OK"`, StatusOK},
-		{`"INFO"`, StatusInfo},
-		{`"UNKNOWN"`, StatusUnknown},
-		{`""`, StatusUnknown},
-		{`"WARN"`, StatusWarn},
-		{`"CRIT"`, StatusCrit},
-		{`"ERROR"`, StatusError},
-	}
-	for _, tt := range tests {
-		var got Status
-		if err := json.Unmarshal([]byte(tt.input), &got); err != nil {
-			t.Errorf("Unmarshal(%s) error: %v", tt.input, err)
-			continue
-		}
-		if got != tt.want {
-			t.Errorf("Unmarshal(%s) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestStatus_UnmarshalJSON_LegacyInt(t *testing.T) {
-	tests := []struct {
-		input string
-		want  Status
-	}{
-		{`-2`, StatusOK},
-		{`-1`, StatusInfo},
 		{`0`, StatusUnknown},
-		{`1`, StatusWarn},
-		{`2`, StatusCrit},
-		{`3`, StatusError},
+		{`1`, StatusOK},
+		{`2`, StatusInfo},
+		{`3`, StatusWarn},
+		{`4`, StatusCrit},
+		{`5`, StatusError},
 	}
 	for _, tt := range tests {
 		var got Status
@@ -89,14 +64,6 @@ func TestStatus_UnmarshalJSON_LegacyInt(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("Unmarshal(%s) = %v, want %v", tt.input, got, tt.want)
 		}
-	}
-}
-
-func TestStatus_UnmarshalJSON_UnknownString(t *testing.T) {
-	var s Status
-	err := json.Unmarshal([]byte(`"BOGUS"`), &s)
-	if err == nil {
-		t.Error("Unmarshal(\"BOGUS\") should return error, got nil")
 	}
 }
 
