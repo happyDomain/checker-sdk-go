@@ -148,10 +148,13 @@ func TestCheckTarget_String(t *testing.T) {
 		target CheckTarget
 		want   string
 	}{
-		{CheckTarget{}, ""},
-		{CheckTarget{UserId: "u1"}, "u1"},
-		{CheckTarget{UserId: "u1", DomainId: "d1"}, "u1/d1"},
+		{CheckTarget{}, "//"},
+		{CheckTarget{UserId: "u1"}, "u1//"},
+		{CheckTarget{UserId: "u1", DomainId: "d1"}, "u1/d1/"},
 		{CheckTarget{UserId: "u1", DomainId: "d1", ServiceId: "s1"}, "u1/d1/s1"},
+		// Ensure different targets with different empty fields don't collide.
+		{CheckTarget{DomainId: "d1"}, "/d1/"},
+		{CheckTarget{ServiceId: "s1"}, "//s1"},
 	}
 	for _, tt := range tests {
 		if got := tt.target.String(); got != tt.want {

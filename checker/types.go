@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -66,19 +65,11 @@ func (t CheckTarget) Scope() CheckScopeType {
 	return CheckScopeUser
 }
 
-// String returns a stable string representation of the target.
+// String returns a stable, unambiguous string representation of the target.
+// All three fields are always present (even when empty) so that different
+// targets never produce the same string.
 func (t CheckTarget) String() string {
-	var parts []string
-	if t.UserId != "" {
-		parts = append(parts, t.UserId)
-	}
-	if t.DomainId != "" {
-		parts = append(parts, t.DomainId)
-	}
-	if t.ServiceId != "" {
-		parts = append(parts, t.ServiceId)
-	}
-	return strings.Join(parts, "/")
+	return t.UserId + "/" + t.DomainId + "/" + t.ServiceId
 }
 
 // CheckerAvailability declares on which scopes a checker can operate.
