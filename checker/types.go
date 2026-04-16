@@ -336,3 +336,33 @@ type ExternalReportRequest struct {
 	Key  ObservationKey  `json:"key"`
 	Data json.RawMessage `json:"data"`
 }
+
+// HealthResponse is returned by GET /health on a remote checker endpoint.
+// It carries lightweight runtime signals so a scheduler can pick the least
+// busy worker among a set of equivalent checker instances.
+//
+// LoadAvg mirrors /proc/loadavg semantics: it is the 1, 5, 15-minute
+// exponentially weighted moving average of the InFlight request count,
+// sampled every 5 seconds. Divide by NumCPU to estimate saturation.
+type HealthResponse struct {
+	// Status is a coarse liveness indicator. Currently always "ok";
+	// "degraded" is reserved for future use.
+	Status string `json:"status"`
+
+	// Uptime is the number of (fractional) seconds since the server started.
+	Uptime float64 `json:"uptime_seconds"`
+
+	// NumCPU is the value of runtime.NumCPU() on this worker.
+	NumCPU int `json:"num_cpu"`
+
+	// InFlight is the number of work requests (/collect, /evaluate, /report)
+	// currently being processed. /health and /definition are not counted.
+	InFlight int64 `json:"inflight"`
+
+	// TotalRequests is the cumulative number of work requests served since
+	// the server started. /health and /definition are not counted.
+	TotalRequests uint64 `json:"total_requests"`
+
+	// LoadAvg holds the 1, 5, 15-minute EWMAs of InFlight.
+	LoadAvg [3]float64 `json:"loadavg"`
+}

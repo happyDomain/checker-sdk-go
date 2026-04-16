@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -96,14 +97,148 @@ func doRequest(handler http.Handler, method, path string, body any, headers map[
 func TestServer_Health(t *testing.T) {
 	p := &testProvider{key: "test", definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}}}
 	srv := newTestServer(p)
+	defer srv.Close()
 	rec := doRequest(srv.Handler(), "GET", "/health", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /health = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var resp map[string]string
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["status"] != "ok" {
-		t.Errorf("GET /health status = %q, want \"ok\"", resp["status"])
+	var resp HealthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode /health: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("GET /health status = %q, want \"ok\"", resp.Status)
+	}
+	if resp.NumCPU <= 0 {
+		t.Errorf("NumCPU = %d, want > 0", resp.NumCPU)
+	}
+	if resp.Uptime < 0 {
+		t.Errorf("Uptime = %v, want >= 0", resp.Uptime)
+	}
+	if resp.InFlight != 0 {
+		t.Errorf("InFlight = %d on fresh server, want 0", resp.InFlight)
+	}
+	if resp.TotalRequests != 0 {
+		t.Errorf("TotalRequests = %d on fresh server, want 0", resp.TotalRequests)
+	}
+	if resp.LoadAvg != [3]float64{0, 0, 0} {
+		t.Errorf("LoadAvg = %v on fresh server, want all zero", resp.LoadAvg)
+	}
+}
+
+func TestServer_Health_TracksInFlight(t *testing.T) {
+	release := make(chan struct{})
+	var collectEntered sync.WaitGroup
+	p := &testProvider{
+		key:        "test",
+		definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}},
+		collectFn: func(ctx context.Context, opts CheckerOptions) (any, error) {
+			collectEntered.Done()
+			<-release
+			return map[string]string{"ok": "1"}, nil
+		},
+	}
+	srv := newTestServer(p)
+	defer srv.Close()
+	handler := srv.Handler()
+
+	const n = 3
+	collectEntered.Add(n)
+	var clientsDone sync.WaitGroup
+	clientsDone.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer clientsDone.Done()
+			doRequest(handler, "POST", "/collect", ExternalCollectRequest{Key: "test"}, nil)
+		}()
+	}
+
+	// Wait for all n handlers to be inside collectFn (== all n in-flight).
+	collectEntered.Wait()
+
+	// Record /health mid-flight. Also hammer it to verify /health polls
+	// do not inflate InFlight or TotalRequests.
+	var mid HealthResponse
+	for i := 0; i < 5; i++ {
+		rec := doRequest(handler, "GET", "/health", nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /health = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&mid); err != nil {
+			t.Fatalf("decode /health: %v", err)
+		}
+	}
+	if mid.InFlight != n {
+		t.Errorf("mid-flight InFlight = %d, want %d", mid.InFlight, n)
+	}
+	if mid.TotalRequests != n {
+		t.Errorf("mid-flight TotalRequests = %d, want %d (health polls must not count)", mid.TotalRequests, n)
+	}
+
+	// Release all work and wait for clients to return.
+	close(release)
+	clientsDone.Wait()
+
+	rec := doRequest(handler, "GET", "/health", nil, nil)
+	var after HealthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&after); err != nil {
+		t.Fatalf("decode /health: %v", err)
+	}
+	if after.InFlight != 0 {
+		t.Errorf("post-flight InFlight = %d, want 0", after.InFlight)
+	}
+	if after.TotalRequests != n {
+		t.Errorf("post-flight TotalRequests = %d, want %d", after.TotalRequests, n)
+	}
+	if after.Uptime < mid.Uptime {
+		t.Errorf("Uptime went backwards: mid=%v after=%v", mid.Uptime, after.Uptime)
+	}
+}
+
+func TestUpdateLoadAvg(t *testing.T) {
+	load := [3]float64{0, 0, 0}
+	for i := 0; i < 20; i++ {
+		load = updateLoadAvg(load, 5)
+	}
+	if !(load[0] > load[1] && load[1] > load[2]) {
+		t.Errorf("expected load[0] > load[1] > load[2], got %v", load)
+	}
+	for i, v := range load {
+		if v <= 0 {
+			t.Errorf("load[%d] = %v, want > 0", i, v)
+		}
+		if v >= 5 {
+			t.Errorf("load[%d] = %v, want < 5 (not yet converged)", i, v)
+		}
+	}
+
+	// Constant sample of zero from a non-zero state must decay toward zero.
+	decaying := load
+	for i := 0; i < 50; i++ {
+		decaying = updateLoadAvg(decaying, 0)
+	}
+	for i := range decaying {
+		if decaying[i] >= load[i] {
+			t.Errorf("decaying[%d] = %v, want < %v", i, decaying[i], load[i])
+		}
+	}
+}
+
+func TestServer_Close_Idempotent(t *testing.T) {
+	p := &testProvider{key: "test", definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}}}
+	srv := newTestServer(p)
+	done := make(chan error, 2)
+	go func() { done <- srv.Close() }()
+	go func() { done <- srv.Close() }()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Close() returned %v, want nil", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Close() deadlocked")
+		}
 	}
 }
 
