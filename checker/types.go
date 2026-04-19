@@ -41,6 +41,11 @@ const (
 	AutoFillZone        = "zone"
 	AutoFillServiceType = "service_type"
 	AutoFillService     = "service"
+
+	// AutoFillDiscoveryEntries receives DiscoveryEntry records published by
+	// other checkers on the same target. The host does not pre-filter by
+	// Type; consumers pick the contracts they understand and ignore the rest.
+	AutoFillDiscoveryEntries = "discovery_entries"
 )
 
 // CheckTarget identifies the resource a check applies to. Identifiers are
@@ -314,8 +319,53 @@ type ExternalCollectRequest struct {
 
 // ExternalCollectResponse is returned by POST /collect on a remote checker endpoint.
 type ExternalCollectResponse struct {
-	Data  json.RawMessage `json:"data,omitempty"`
-	Error string          `json:"error,omitempty"`
+	Data    json.RawMessage  `json:"data,omitempty"`
+	Entries []DiscoveryEntry `json:"entries,omitempty"`
+	Error   string           `json:"error,omitempty"`
+}
+
+// DiscoveryEntry is a single "thing worth probing" declared by a checker as a
+// by-product of its collection, intended to be consumed by other checkers
+// without having to re-parse raw observations.
+//
+// The SDK treats Payload as an opaque byte string: producer and consumer
+// checkers agree on a schema through a separate contract (typically a small
+// shared Go package imported by both). This keeps the SDK free of
+// protocol-specific concepts; new entry families (TLS endpoint, HTTP probe,
+// ACME challenge, DNSSEC key, …) can appear without touching it.
+//
+// Entries are ingested by happyDomain into a separate index. Each new
+// collection from the same source atomically replaces the set of entries
+// previously published for the same (producer, target) pair.
+type DiscoveryEntry struct {
+	// Type names the contract Payload follows, e.g. "tls.endpoint" or
+	// "http.probe". Producers and consumers match on this string; the SDK
+	// does not interpret it. Stick to a reverse-DNS-ish convention so that
+	// independent contracts do not collide.
+	Type string `json:"type"`
+
+	// Ref is a stable per-entry identifier chosen by the producer. The host
+	// uses it to dedupe entries across repeated collections and to link
+	// related observations back to this entry (RelatedObservation.Ref). Two
+	// producers may reuse the same Ref space; the host namespaces them by
+	// (producer, target).
+	Ref string `json:"ref"`
+
+	// Payload is the entry-specific data, in the format defined by the
+	// contract named in Type. Opaque to the SDK.
+	Payload json.RawMessage `json:"payload"`
+}
+
+// DiscoveryPublisher is an optional interface an ObservationProvider can
+// co-implement to declare DiscoveryEntry records derived from the value it
+// just collected.
+//
+// The host invokes DiscoverEntries immediately after Collect, passing the
+// native Go value returned by Collect (no JSON round-trip). Implementations
+// should therefore type-assert data to their concrete collection type and
+// marshal each contract payload themselves.
+type DiscoveryPublisher interface {
+	DiscoverEntries(data any) ([]DiscoveryEntry, error)
 }
 
 // ExternalEvaluateRequest is sent to POST /evaluate on a remote checker endpoint.

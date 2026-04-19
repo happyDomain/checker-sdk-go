@@ -256,9 +256,21 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, ExternalCollectResponse{
-		Data: json.RawMessage(raw),
-	})
+	resp := ExternalCollectResponse{Data: json.RawMessage(raw)}
+
+	// Harvest discovery entries from the native Go value, before it goes
+	// out of scope. No re-parse; DiscoverEntries operates on the same
+	// object that was just marshaled above.
+	if dp, ok := s.provider.(DiscoveryPublisher); ok {
+		entries, derr := dp.DiscoverEntries(data)
+		if derr != nil {
+			log.Printf("DiscoverEntries failed: %v", derr)
+		} else {
+			resp.Entries = entries
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
