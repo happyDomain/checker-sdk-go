@@ -44,15 +44,15 @@ func (p *testProvider) Collect(ctx context.Context, opts CheckerOptions) (any, e
 	return map[string]string{"result": "ok"}, nil
 }
 func (p *testProvider) Definition() *CheckerDefinition { return p.definition }
-func (p *testProvider) GetHTMLReport(raw json.RawMessage) (string, error) {
+func (p *testProvider) GetHTMLReport(ctx ReportContext) (string, error) {
 	if p.htmlFn != nil {
-		return p.htmlFn(raw)
+		return p.htmlFn(ctx.Data())
 	}
 	return "<h1>report</h1>", nil
 }
-func (p *testProvider) ExtractMetrics(raw json.RawMessage, t time.Time) ([]CheckMetric, error) {
+func (p *testProvider) ExtractMetrics(ctx ReportContext, t time.Time) ([]CheckMetric, error) {
 	if p.metricsFn != nil {
-		return p.metricsFn(raw, t)
+		return p.metricsFn(ctx.Data(), t)
 	}
 	return []CheckMetric{{Name: "m1", Value: 1.0, Timestamp: t}}, nil
 }
@@ -426,6 +426,63 @@ func TestServer_Report_Metrics(t *testing.T) {
 	if len(metrics) != 1 {
 		t.Errorf("metrics count = %d, want 1", len(metrics))
 	}
+}
+
+// TestServer_Report_Related verifies the remote /report path wires
+// ExternalReportRequest.Related through to the provider's ReportContext,
+// the fix for the "remote checkers can't see related observations" gap.
+func TestServer_Report_Related(t *testing.T) {
+	var gotRelated []RelatedObservation
+	p := &testProvider{
+		key: "test",
+		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
+	}
+	// Replace htmlFn with one that peeks at a related key. We can't do that
+	// directly through testProvider's htmlFn (which only sees raw), so
+	// bind to GetHTMLReport via an inline wrapper: use a per-test provider
+	// that captures the ReportContext before delegating to the template.
+	srv := NewServer(&relatedPeekingProvider{
+		base:   p,
+		target: &gotRelated,
+	})
+	defer srv.Close()
+
+	req := ExternalReportRequest{
+		Key:  "test",
+		Data: json.RawMessage(`{}`),
+		Related: map[ObservationKey][]RelatedObservation{
+			"tls_probes": {
+				{CheckerID: "tls", Key: "tls_probes", Data: json.RawMessage(`{"ok":true}`), Ref: "ep-1"},
+			},
+		},
+	}
+	rec := doRequest(srv.Handler(), "POST", "/report", req, map[string]string{"Accept": "text/html"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report = %d, want 200", rec.Code)
+	}
+	if len(gotRelated) != 1 {
+		t.Fatalf("provider saw %d related observations, want 1", len(gotRelated))
+	}
+	if gotRelated[0].CheckerID != "tls" || string(gotRelated[0].Data) != `{"ok":true}` {
+		t.Errorf("related mismatch: got %+v", gotRelated[0])
+	}
+}
+
+// relatedPeekingProvider forwards to a base testProvider but copies the
+// Related("tls_probes") slice observed at GetHTMLReport time into target.
+type relatedPeekingProvider struct {
+	base   *testProvider
+	target *[]RelatedObservation
+}
+
+func (p *relatedPeekingProvider) Key() ObservationKey { return p.base.Key() }
+func (p *relatedPeekingProvider) Collect(ctx context.Context, opts CheckerOptions) (any, error) {
+	return p.base.Collect(ctx, opts)
+}
+func (p *relatedPeekingProvider) Definition() *CheckerDefinition { return p.base.definition }
+func (p *relatedPeekingProvider) GetHTMLReport(ctx ReportContext) (string, error) {
+	*p.target = ctx.Related("tls_probes")
+	return "<p>ok</p>", nil
 }
 
 func TestServer_Report_BadBody(t *testing.T) {

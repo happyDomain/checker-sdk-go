@@ -319,7 +319,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		html, err := reporter.GetHTMLReport(req.Data)
+		html, err := reporter.GetHTMLReport(NewReportContext(req.Data, req.Related))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to generate HTML report: %v", err), http.StatusInternalServerError)
 			return
@@ -337,7 +337,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metrics, err := reporter.ExtractMetrics(req.Data, time.Now())
+	metrics, err := reporter.ExtractMetrics(NewReportContext(req.Data, req.Related), time.Now())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to extract metrics: %v", err),
@@ -359,6 +359,15 @@ func (g *mapObservationGetter) Get(ctx context.Context, key ObservationKey, dest
 		return fmt.Errorf("observation %q not available", key)
 	}
 	return json.Unmarshal(raw, dest)
+}
+
+// GetRelated always returns nil in the remote /evaluate path: the host that
+// invokes /evaluate does not (currently) carry cross-checker related data in
+// ExternalEvaluateRequest. Consumers that need related observations must run
+// evaluation locally with a host-side ObservationContext that resolves
+// lineage.
+func (g *mapObservationGetter) GetRelated(ctx context.Context, key ObservationKey) ([]RelatedObservation, error) {
+	return nil, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

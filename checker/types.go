@@ -238,8 +238,45 @@ type CheckRuleWithOptions interface {
 
 // ObservationGetter provides access to observation data (used by CheckRule).
 // Get unmarshals observation data into dest (like json.Unmarshal).
+//
+// GetRelated returns observations produced by other checkers on DiscoveryEntry
+// records originally published by the current target. It is the core of
+// cross-checker composition: a checker that published some entries via its
+// DiscoveryPublisher can, during rule evaluation, fetch the latest
+// observations that cover those entries and fold them into its own states.
+//
+// GetRelated returns an empty slice (not an error) when there is nothing
+// to relate (no entries originally published, no downstream observation
+// yet, no downstream checker registered for the entry type, …). Callers
+// handle that as "no related data", typically skipping optional sections.
 type ObservationGetter interface {
 	Get(ctx context.Context, key ObservationKey, dest any) error
+	GetRelated(ctx context.Context, key ObservationKey) ([]RelatedObservation, error)
+}
+
+// RelatedObservation is a single observation, produced by some other checker,
+// that covers a DiscoveryEntry originally published by the current target.
+//
+// Data carries the raw JSON payload; consumers parse it according to the
+// producer's schema, which they are expected to know via external agreement
+// (typically a shared contract package imported by both producer and
+// consumer).
+type RelatedObservation struct {
+	// CheckerID identifies the producer of this observation.
+	CheckerID string `json:"checkerId"`
+
+	// Key is the observation key the producer filled.
+	Key ObservationKey `json:"key"`
+
+	// Data is the raw JSON payload as persisted by the producer.
+	Data json.RawMessage `json:"data"`
+
+	// CollectedAt is when the producer ran its Collect.
+	CollectedAt time.Time `json:"collectedAt"`
+
+	// Ref matches DiscoveryEntry.Ref of the entry this observation covers.
+	// Opaque to the SDK; meaningful within the producer/consumer contract.
+	Ref string `json:"ref"`
 }
 
 // CheckAggregator combines multiple CheckStates into a single result.
@@ -247,20 +284,69 @@ type CheckAggregator interface {
 	Aggregate(states []CheckState) CheckState
 }
 
+// ReportContext carries both the primary observation payload and any
+// observations produced by other checkers that cover the same discovery
+// entries. Hosts build a ReportContext and hand it to reporter methods.
+//
+// The method set is deliberately tiny: a single primary payload (Data) and
+// a query for related observations by key (Related). Hosts return nil from
+// Related when there is nothing to relate; reporters must tolerate that.
+type ReportContext interface {
+	Data() json.RawMessage
+	Related(key ObservationKey) []RelatedObservation
+}
+
+// NewReportContext returns a ReportContext backed by a primary payload and
+// a pre-resolved map of related observations by key. The SDK's /report HTTP
+// handler uses this to wrap ExternalReportRequest contents; hosts and tests
+// can use it whenever they already have the related observations in memory.
+//
+// Passing a nil or empty related map is fine; Related(key) will then return
+// nil, just like StaticReportContext.
+func NewReportContext(data json.RawMessage, related map[ObservationKey][]RelatedObservation) ReportContext {
+	return fixedReportContext{data: data, related: related}
+}
+
+// StaticReportContext is a shorthand for NewReportContext(data, nil): a
+// ReportContext with a primary payload and no related observations.
+// Intended for tests and ad-hoc callers that have no lineage to supply.
+func StaticReportContext(data json.RawMessage) ReportContext {
+	return fixedReportContext{data: data}
+}
+
+type fixedReportContext struct {
+	data    json.RawMessage
+	related map[ObservationKey][]RelatedObservation
+}
+
+func (f fixedReportContext) Data() json.RawMessage { return f.data }
+func (f fixedReportContext) Related(key ObservationKey) []RelatedObservation {
+	if f.related == nil {
+		return nil
+	}
+	return f.related[key]
+}
+
 // CheckerHTMLReporter is an optional interface that observation providers can
 // implement to render their stored data as a full HTML document (for iframe embedding).
 // Detect support with a type assertion: _, ok := provider.(CheckerHTMLReporter)
+//
+// The ReportContext carries the primary observation payload plus any
+// downstream observations produced on DiscoveryEntry records this checker
+// published. Implementations that do not need related observations can
+// simply consume ctx.Data().
 type CheckerHTMLReporter interface {
-	// GetHTMLReport generates an HTML document from the JSON-encoded observation data.
-	GetHTMLReport(raw json.RawMessage) (string, error)
+	GetHTMLReport(ctx ReportContext) (string, error)
 }
 
 // CheckerMetricsReporter is an optional interface that observation providers can
 // implement to extract time-series metrics from their stored data.
 // Detect support with a type assertion: _, ok := provider.(CheckerMetricsReporter)
+//
+// As with CheckerHTMLReporter, the ReportContext exposes related
+// observations for cross-checker composition.
 type CheckerMetricsReporter interface {
-	// ExtractMetrics returns metrics from JSON-encoded observation data.
-	ExtractMetrics(raw json.RawMessage, collectedAt time.Time) ([]CheckMetric, error)
+	ExtractMetrics(ctx ReportContext, collectedAt time.Time) ([]CheckMetric, error)
 }
 
 // CheckerDefinitionProvider is an optional interface that observation providers can
@@ -382,9 +468,17 @@ type ExternalEvaluateResponse struct {
 }
 
 // ExternalReportRequest is sent to POST /report on a remote checker endpoint.
+//
+// Related carries observations produced by other checkers on DiscoveryEntry
+// records originally published by the target of this report, that is, the
+// cross-checker lineage that ObservationGetter.GetRelated would expose in
+// the in-process path. The host composes it before making the HTTP request;
+// when absent, the remote checker receives a context that reports no
+// related observations (equivalent to StaticReportContext).
 type ExternalReportRequest struct {
-	Key  ObservationKey  `json:"key"`
-	Data json.RawMessage `json:"data"`
+	Key     ObservationKey                          `json:"key"`
+	Data    json.RawMessage                         `json:"data"`
+	Related map[ObservationKey][]RelatedObservation `json:"related,omitempty"`
 }
 
 // HealthResponse is returned by GET /health on a remote checker endpoint.
