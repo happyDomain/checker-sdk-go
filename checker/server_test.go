@@ -65,8 +65,8 @@ type dummyRule struct {
 
 func (r *dummyRule) Name() string        { return r.name }
 func (r *dummyRule) Description() string { return r.desc }
-func (r *dummyRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) CheckState {
-	return CheckState{Status: StatusOK, Message: r.name + " passed"}
+func (r *dummyRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState {
+	return []CheckState{{Status: StatusOK, Message: r.name + " passed"}}
 }
 
 // --- helpers ---

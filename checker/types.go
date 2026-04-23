@@ -182,11 +182,15 @@ func (s Status) String() string {
 	}
 }
 
-// CheckState is the result of evaluating a single rule.
+// CheckState is the result of evaluating a single rule on a single subject.
+// Subject is opaque to the SDK: producers and consumers agree on its shape
+// (a hostname, a record key, a serial, …). Leave Subject empty for rules
+// that produce a single, global result.
 type CheckState struct {
 	Status  Status         `json:"status"`
 	Message string         `json:"message"`
 	Code    string         `json:"code,omitempty"`
+	Subject string         `json:"subject,omitempty"`
 	Meta    map[string]any `json:"meta,omitempty"`
 }
 
@@ -222,11 +226,20 @@ type CheckRuleInfo struct {
 	Options     *CheckerOptionsDocumentation `json:"options,omitempty"`
 }
 
-// CheckRule evaluates observations and produces a CheckState.
+// CheckRule evaluates observations and produces one or more CheckStates.
+//
+// Evaluate returns a slice so a rule iterating over multiple elements can
+// emit one state per subject (each carrying CheckState.Subject) without
+// squashing them into a single concatenated message.
+//
+// Evaluate must not return a nil or empty slice: callers expect at least
+// one state per rule. When a rule finds nothing to evaluate, return a
+// single CheckState with an appropriate status (typically StatusInfo or
+// StatusOK) describing that fact.
 type CheckRule interface {
 	Name() string
 	Description() string
-	Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) CheckState
+	Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState
 }
 
 // CheckRuleWithOptions is an optional interface that rules can implement

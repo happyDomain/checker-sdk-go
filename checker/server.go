@@ -291,11 +291,19 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		state := rule.Evaluate(r.Context(), obs, req.Options)
-		if state.Code == "" {
-			state.Code = rule.Name()
+		ruleStates := rule.Evaluate(r.Context(), obs, req.Options)
+		if len(ruleStates) == 0 {
+			ruleStates = []CheckState{{
+				Status:  StatusUnknown,
+				Message: fmt.Sprintf("rule %q returned no state", rule.Name()),
+			}}
 		}
-		states = append(states, state)
+		for _, state := range ruleStates {
+			if state.Code == "" {
+				state.Code = rule.Name()
+			}
+			states = append(states, state)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, ExternalEvaluateResponse{States: states})
