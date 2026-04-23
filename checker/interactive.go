@@ -302,11 +302,12 @@ var checkResultTemplate = template.Must(template.New("result").Funcs(templateFun
 {{if .States}}
 <h2>Check states</h2>
 <table>
-  <thead><tr><th>Status</th><th>Code</th><th>Subject</th><th>Message</th></tr></thead>
+  <thead><tr><th>Status</th><th>Rule</th><th>Code</th><th>Subject</th><th>Message</th></tr></thead>
   <tbody>
   {{range .States}}
     <tr>
       <td><span class="badge {{statusClass .Status}}">{{statusString .Status}}</span></td>
+      <td>{{.RuleName}}</td>
       <td>{{.Code}}</td>
       <td>{{.Subject}}</td>
       <td>{{.Message}}</td>

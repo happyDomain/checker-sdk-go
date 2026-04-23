@@ -187,11 +187,12 @@ func (s Status) String() string {
 // (a hostname, a record key, a serial, …). Leave Subject empty for rules
 // that produce a single, global result.
 type CheckState struct {
-	Status  Status         `json:"status"`
-	Message string         `json:"message"`
-	Code    string         `json:"code,omitempty"`
-	Subject string         `json:"subject,omitempty"`
-	Meta    map[string]any `json:"meta,omitempty"`
+	Status   Status         `json:"status"`
+	Message  string         `json:"message"`
+	RuleName string         `json:"rule,omitempty"`
+	Code     string         `json:"code,omitempty"`
+	Subject  string         `json:"subject,omitempty"`
+	Meta     map[string]any `json:"meta,omitempty"`
 }
 
 // CheckMetric represents a single metric produced by a check.

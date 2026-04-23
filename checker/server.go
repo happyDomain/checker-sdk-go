@@ -312,9 +312,7 @@ func (s *Server) evaluateRules(ctx context.Context, obs ObservationGetter, opts 
 			}}
 		}
 		for _, state := range ruleStates {
-			if state.Code == "" {
-				state.Code = rule.Name()
-			}
+			state.RuleName = rule.Name()
 			states = append(states, state)
 		}
 	}

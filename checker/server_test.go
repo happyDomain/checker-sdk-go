@@ -69,6 +69,18 @@ func (r *dummyRule) Evaluate(ctx context.Context, obs ObservationGetter, opts Ch
 	return []CheckState{{Status: StatusOK, Message: r.name + " passed"}}
 }
 
+// codedRule emits a CheckState with a pre-set Code, to verify the server
+// stamps RuleName without clobbering rule-provided codes.
+type codedRule struct {
+	name, code string
+}
+
+func (r *codedRule) Name() string        { return r.name }
+func (r *codedRule) Description() string { return "" }
+func (r *codedRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState {
+	return []CheckState{{Status: StatusWarn, Code: r.code, Message: "coded finding"}}
+}
+
 // --- helpers ---
 
 func newTestServer(p *testProvider) *Server {
@@ -349,8 +361,11 @@ func TestServer_Evaluate(t *testing.T) {
 	if len(resp.States) != 2 {
 		t.Fatalf("evaluate states = %d, want 2", len(resp.States))
 	}
-	if resp.States[0].Code != "rule1" {
-		t.Errorf("evaluate state[0].Code = %q, want \"rule1\"", resp.States[0].Code)
+	if resp.States[0].RuleName != "rule1" {
+		t.Errorf("evaluate state[0].RuleName = %q, want \"rule1\"", resp.States[0].RuleName)
+	}
+	if resp.States[0].Code != "" {
+		t.Errorf("evaluate state[0].Code = %q, want empty (rule did not set one)", resp.States[0].Code)
 	}
 }
 
@@ -379,8 +394,37 @@ func TestServer_Evaluate_DisabledRule(t *testing.T) {
 	if len(resp.States) != 1 {
 		t.Fatalf("evaluate with disabled rule: states = %d, want 1", len(resp.States))
 	}
-	if resp.States[0].Code != "rule2" {
-		t.Errorf("remaining state code = %q, want \"rule2\"", resp.States[0].Code)
+	if resp.States[0].RuleName != "rule2" {
+		t.Errorf("remaining state rule name = %q, want \"rule2\"", resp.States[0].RuleName)
+	}
+}
+
+func TestServer_Evaluate_RulePreservesCode(t *testing.T) {
+	def := &CheckerDefinition{
+		ID: "test-checker",
+		Rules: []CheckRule{
+			&codedRule{name: "ruleA", code: "too_many_lookups"},
+		},
+	}
+	p := &testProvider{key: "test", definition: def}
+	srv := newTestServer(p)
+
+	rec := doRequest(srv.Handler(), "POST", "/evaluate", ExternalEvaluateRequest{
+		Observations: map[ObservationKey]json.RawMessage{"test": json.RawMessage(`{}`)},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /evaluate = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var resp ExternalEvaluateResponse
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if len(resp.States) != 1 {
+		t.Fatalf("states = %d, want 1", len(resp.States))
+	}
+	if resp.States[0].RuleName != "ruleA" {
+		t.Errorf("state.RuleName = %q, want \"ruleA\"", resp.States[0].RuleName)
+	}
+	if resp.States[0].Code != "too_many_lookups" {
+		t.Errorf("state.Code = %q, want \"too_many_lookups\" (rule-set code must be preserved)", resp.States[0].Code)
 	}
 }
 
