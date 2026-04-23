@@ -30,6 +30,32 @@ go get git.happydns.org/checker-sdk-go/checker
 See [checker-dummy](https://git.happydns.org/checker-dummy) for a
 fully working, documented template.
 
+## Extending the server
+
+`checker.Server` exposes the standard SDK routes (`/health`, `/collect`,
+and, depending on the provider's optional interfaces, `/definition`,
+`/evaluate`, `/report`). Plugins that need to serve auxiliary endpoints
+(debug pages, webhooks, custom UI assets, …) can register them on the
+same mux:
+
+```go
+srv := checker.NewServer(provider)
+
+srv.HandleFunc("GET /debug/state", func(w http.ResponseWriter, r *http.Request) {
+    // …
+})
+
+// Opt a custom route into the in-flight / load-average signal
+// reported on /health:
+srv.Handle("POST /webhook", srv.TrackWork(myWebhookHandler))
+
+log.Fatal(srv.ListenAndServe(":8080"))
+```
+
+Patterns that collide with built-in routes panic at registration —
+pick non-overlapping paths. Custom handlers are not wrapped by the
+load-tracking middleware unless you opt in via `TrackWork`.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

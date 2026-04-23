@@ -111,19 +111,21 @@ func NewServer(provider ObservationProvider) *Server {
 	}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /health", s.handleHealth)
-	s.mux.Handle("POST /collect", s.trackWork(http.HandlerFunc(s.handleCollect)))
+	s.mux.Handle("POST /collect", s.TrackWork(http.HandlerFunc(s.handleCollect)))
 
 	if dp, ok := provider.(CheckerDefinitionProvider); ok {
-		s.definition = dp.Definition()
-		s.definition.BuildRulesInfo()
-		s.mux.HandleFunc("GET /definition", s.handleDefinition)
-		s.mux.Handle("POST /evaluate", s.trackWork(http.HandlerFunc(s.handleEvaluate)))
+		if def := dp.Definition(); def != nil {
+			s.definition = def
+			s.definition.BuildRulesInfo()
+			s.mux.HandleFunc("GET /definition", s.handleDefinition)
+			s.mux.Handle("POST /evaluate", s.TrackWork(http.HandlerFunc(s.handleEvaluate)))
+		}
 	}
 
 	if _, ok := provider.(CheckerHTMLReporter); ok {
-		s.mux.Handle("POST /report", s.trackWork(http.HandlerFunc(s.handleReport)))
+		s.mux.Handle("POST /report", s.TrackWork(http.HandlerFunc(s.handleReport)))
 	} else if _, ok := provider.(CheckerMetricsReporter); ok {
-		s.mux.Handle("POST /report", s.trackWork(http.HandlerFunc(s.handleReport)))
+		s.mux.Handle("POST /report", s.TrackWork(http.HandlerFunc(s.handleReport)))
 	}
 
 	go s.runSampler(ctx)
@@ -135,6 +137,18 @@ func NewServer(provider ObservationProvider) *Server {
 // to embed it in a custom server or add middleware.
 func (s *Server) Handler() http.Handler {
 	return requestLogger(s.mux)
+}
+
+// Handle registers an auxiliary handler on the server's mux. Must be called
+// before ListenAndServe or Handler(). Custom handlers are not tracked by
+// TrackWork; wrap them explicitly if you want them counted in /health load.
+func (s *Server) Handle(pattern string, handler http.Handler) {
+	s.mux.Handle(pattern, handler)
+}
+
+// HandleFunc is the http.HandlerFunc-flavoured counterpart of Handle.
+func (s *Server) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
+	s.mux.HandleFunc(pattern, handler)
 }
 
 // ListenAndServe starts the HTTP server on the given address.
@@ -158,10 +172,9 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// trackWork wraps a handler with in-flight and total-request accounting.
-// It is applied only to "work" endpoints (/collect, /evaluate, /report) so
-// that /health polling traffic does not pollute the load signal.
-func (s *Server) trackWork(next http.Handler) http.Handler {
+// TrackWork wraps a handler with in-flight and total-request accounting,
+// opting custom routes into the load signal reported on /health.
+func (s *Server) TrackWork(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.inFlight.Add(1)
 		s.totalRequests.Add(1)
