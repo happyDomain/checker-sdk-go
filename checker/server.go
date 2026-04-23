@@ -60,15 +60,17 @@ func updateLoadAvg(prev [3]float64, sample float64) [3]float64 {
 // It always exposes /health and /collect. If the provider implements
 // CheckerDefinitionProvider, it also exposes /definition and /evaluate.
 // If the provider implements CheckerHTMLReporter or CheckerMetricsReporter,
-// it also exposes /report.
+// it also exposes /report. If the provider implements CheckerInteractive,
+// it also exposes /check (a human-facing web form).
 //
 // Security: Server does not perform any authentication or authorization.
 // It is intended to be run behind a reverse proxy or in a trusted network
 // where access control is handled externally (e.g. by the happyDomain server).
 type Server struct {
-	provider   ObservationProvider
-	definition *CheckerDefinition
-	mux        *http.ServeMux
+	provider    ObservationProvider
+	definition  *CheckerDefinition
+	interactive CheckerInteractive
+	mux         *http.ServeMux
 
 	// startTime is captured in NewServer and used to compute uptime.
 	startTime time.Time
@@ -126,6 +128,12 @@ func NewServer(provider ObservationProvider) *Server {
 		s.mux.Handle("POST /report", s.TrackWork(http.HandlerFunc(s.handleReport)))
 	} else if _, ok := provider.(CheckerMetricsReporter); ok {
 		s.mux.Handle("POST /report", s.TrackWork(http.HandlerFunc(s.handleReport)))
+	}
+
+	if ip, ok := provider.(CheckerInteractive); ok {
+		s.interactive = ip
+		s.mux.HandleFunc("GET /check", s.handleCheckForm)
+		s.mux.Handle("POST /check", s.TrackWork(http.HandlerFunc(s.handleCheckSubmit)))
 	}
 
 	go s.runSampler(ctx)
@@ -286,25 +294,17 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
-	var req ExternalEvaluateRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ExternalEvaluateResponse{
-			Error: fmt.Sprintf("invalid request body: %v", err),
-		})
-		return
-	}
-
-	obs := &mapObservationGetter{data: req.Observations}
-
+// evaluateRules runs all definition rules against obs/opts, skipping any rule
+// whose name maps to false in enabledRules (nil means run all).
+func (s *Server) evaluateRules(ctx context.Context, obs ObservationGetter, opts CheckerOptions, enabledRules map[string]bool) []CheckState {
 	var states []CheckState
 	for _, rule := range s.definition.Rules {
-		if len(req.EnabledRules) > 0 {
-			if enabled, ok := req.EnabledRules[rule.Name()]; ok && !enabled {
+		if len(enabledRules) > 0 {
+			if enabled, ok := enabledRules[rule.Name()]; ok && !enabled {
 				continue
 			}
 		}
-		ruleStates := rule.Evaluate(r.Context(), obs, req.Options)
+		ruleStates := rule.Evaluate(ctx, obs, opts)
 		if len(ruleStates) == 0 {
 			ruleStates = []CheckState{{
 				Status:  StatusUnknown,
@@ -318,7 +318,20 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 			states = append(states, state)
 		}
 	}
+	return states
+}
 
+func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
+	var req ExternalEvaluateRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ExternalEvaluateResponse{
+			Error: fmt.Sprintf("invalid request body: %v", err),
+		})
+		return
+	}
+
+	obs := &mapObservationGetter{data: req.Observations}
+	states := s.evaluateRules(r.Context(), obs, req.Options, req.EnabledRules)
 	writeJSON(w, http.StatusOK, ExternalEvaluateResponse{States: states})
 }
 

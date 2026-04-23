@@ -56,6 +56,27 @@ Patterns that collide with built-in routes panic at registration —
 pick non-overlapping paths. Custom handlers are not wrapped by the
 load-tracking middleware unless you opt in via `TrackWork`.
 
+## Standalone human UI (`/check`)
+
+Providers that implement `CheckerInteractive` get a built-in human-facing
+web form on `/check`, usable outside of happyDomain:
+
+```go
+type CheckerInteractive interface {
+    RenderForm() []CheckerOptionField
+    ParseForm(r *http.Request) (CheckerOptions, error)
+}
+```
+
+- `GET /check` renders a form derived from `RenderForm()`.
+- `POST /check` calls `ParseForm` to obtain `CheckerOptions`, runs the
+  standard `Collect` → `Evaluate` → `GetHTMLReport` / `ExtractMetrics`
+  pipeline, and returns a consolidated HTML page.
+
+`ParseForm` is where the checker replaces what happyDomain would normally
+auto-fill (zone records, service payload, …) — typically by issuing its
+own DNS queries from the human-supplied inputs.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
