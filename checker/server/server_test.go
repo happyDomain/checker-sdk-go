@@ -542,6 +542,107 @@ func (p *relatedPeekingProvider) GetHTMLReport(ctx checker.ReportContext) (strin
 	return "<p>ok</p>", nil
 }
 
+// statesPeekingProvider captures the ReportContext's States slice at
+// GetHTMLReport / ExtractMetrics time.
+type statesPeekingProvider struct {
+	base       *testProvider
+	htmlSeen   *[]checker.CheckState
+	metricSeen *[]checker.CheckState
+}
+
+func (p *statesPeekingProvider) Key() checker.ObservationKey { return p.base.Key() }
+func (p *statesPeekingProvider) Collect(ctx context.Context, opts checker.CheckerOptions) (any, error) {
+	return p.base.Collect(ctx, opts)
+}
+func (p *statesPeekingProvider) Definition() *checker.CheckerDefinition { return p.base.definition }
+func (p *statesPeekingProvider) GetHTMLReport(ctx checker.ReportContext) (string, error) {
+	if p.htmlSeen != nil {
+		*p.htmlSeen = ctx.States()
+	}
+	return "<p>ok</p>", nil
+}
+func (p *statesPeekingProvider) ExtractMetrics(ctx checker.ReportContext, t time.Time) ([]checker.CheckMetric, error) {
+	if p.metricSeen != nil {
+		*p.metricSeen = ctx.States()
+	}
+	return []checker.CheckMetric{{Name: "m1", Value: 1.0, Timestamp: t}}, nil
+}
+
+// TestServer_Report_States_HTML verifies ExternalReportRequest.States is
+// threaded into the ReportContext seen by the HTML reporter.
+func TestServer_Report_States_HTML(t *testing.T) {
+	var seen []checker.CheckState
+	base := &testProvider{
+		key:        "test",
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
+	}
+	srv := New(&statesPeekingProvider{base: base, htmlSeen: &seen})
+	defer srv.Close()
+
+	states := []checker.CheckState{
+		{Status: checker.StatusCrit, Message: "broken", RuleName: "r1", Code: "bad", Subject: "host.example"},
+	}
+	req := checker.ExternalReportRequest{
+		Key:    "test",
+		Data:   json.RawMessage(`{}`),
+		States: states,
+	}
+	rec := doRequest(srv.Handler(), "POST", "/report", req, map[string]string{"Accept": "text/html"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report = %d, want 200", rec.Code)
+	}
+	if len(seen) != 1 || seen[0].RuleName != "r1" || seen[0].Code != "bad" || seen[0].Subject != "host.example" {
+		t.Errorf("reporter saw states = %+v, want single state {RuleName:r1, Code:bad, Subject:host.example}", seen)
+	}
+}
+
+// TestServer_Report_States_Metrics verifies the States passthrough on the
+// metrics path as well.
+func TestServer_Report_States_Metrics(t *testing.T) {
+	var seen []checker.CheckState
+	base := &testProvider{
+		key:        "test",
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
+	}
+	srv := New(&statesPeekingProvider{base: base, metricSeen: &seen})
+	defer srv.Close()
+
+	req := checker.ExternalReportRequest{
+		Key:    "test",
+		Data:   json.RawMessage(`{}`),
+		States: []checker.CheckState{{Status: checker.StatusWarn, RuleName: "r1"}},
+	}
+	rec := doRequest(srv.Handler(), "POST", "/report", req, map[string]string{"Accept": "application/json"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report = %d, want 200", rec.Code)
+	}
+	if len(seen) != 1 || seen[0].RuleName != "r1" {
+		t.Errorf("reporter saw states = %+v, want single state with RuleName=r1", seen)
+	}
+}
+
+// TestServer_Report_States_Absent verifies that omitting States in the
+// request yields a nil States() slice on the reporter side (graceful
+// degradation for hosts that don't thread evaluate→report yet).
+func TestServer_Report_States_Absent(t *testing.T) {
+	seen := []checker.CheckState{{Status: checker.StatusOK}} // non-nil sentinel
+	base := &testProvider{
+		key:        "test",
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
+	}
+	srv := New(&statesPeekingProvider{base: base, htmlSeen: &seen})
+	defer srv.Close()
+
+	req := checker.ExternalReportRequest{Key: "test", Data: json.RawMessage(`{}`)}
+	rec := doRequest(srv.Handler(), "POST", "/report", req, map[string]string{"Accept": "text/html"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report = %d, want 200", rec.Code)
+	}
+	if seen != nil {
+		t.Errorf("States() = %+v, want nil when ExternalReportRequest.States is absent", seen)
+	}
+}
+
 func TestServer_Report_BadBody(t *testing.T) {
 	p := &testProvider{
 		key:        "test",

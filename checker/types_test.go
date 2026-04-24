@@ -17,6 +17,7 @@ package checker
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -153,6 +154,54 @@ func TestCheckerDefinition_BuildRulesInfo(t *testing.T) {
 	}
 	if d.RulesInfo[0].Name != "r1" || d.RulesInfo[0].Description != "desc1" {
 		t.Errorf("BuildRulesInfo: got %+v, want {Name:r1, Description:desc1}", d.RulesInfo[0])
+	}
+}
+
+// Compile-time check that fixedReportContext implements ReportContext.
+var _ ReportContext = fixedReportContext{}
+
+func TestStaticReportContext_NoExtras(t *testing.T) {
+	ctx := StaticReportContext(json.RawMessage(`{"k":"v"}`))
+	if string(ctx.Data()) != `{"k":"v"}` {
+		t.Errorf("Data() = %s, want %s", ctx.Data(), `{"k":"v"}`)
+	}
+	if ctx.Related("any") != nil {
+		t.Error("Related(any) should be nil for StaticReportContext")
+	}
+	if ctx.States() != nil {
+		t.Error("States() should be nil for StaticReportContext")
+	}
+}
+
+func TestNewReportContext_NilStates(t *testing.T) {
+	ctx := NewReportContext(json.RawMessage(`{}`), nil, nil)
+	if ctx.States() != nil {
+		t.Errorf("States() = %v, want nil", ctx.States())
+	}
+}
+
+func TestNewReportContext_PassesStates(t *testing.T) {
+	states := []CheckState{
+		{Status: StatusWarn, Message: "heads up", RuleName: "r1"},
+		{Status: StatusCrit, Message: "fix me", RuleName: "r2", Subject: "host.example"},
+	}
+	ctx := NewReportContext(json.RawMessage(`{}`), nil, states)
+	got := ctx.States()
+	if !reflect.DeepEqual(got, states) {
+		t.Errorf("States() = %+v, want %+v", got, states)
+	}
+}
+
+func TestNewReportContext_PassesRelated(t *testing.T) {
+	rel := map[ObservationKey][]RelatedObservation{
+		"other.key": {{CheckerID: "other", Key: "other.key", Ref: "r1"}},
+	}
+	ctx := NewReportContext(json.RawMessage(`{}`), rel, nil)
+	if got := ctx.Related("other.key"); len(got) != 1 || got[0].CheckerID != "other" {
+		t.Errorf("Related(other.key) = %+v, want one entry with CheckerID=other", got)
+	}
+	if ctx.Related("missing") != nil {
+		t.Error("Related(missing) should be nil")
 	}
 }
 

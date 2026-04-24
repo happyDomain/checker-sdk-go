@@ -96,14 +96,15 @@ func (s *Server) handleCheckForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
+	fields := s.interactive.RenderForm()
 	if err := r.ParseForm(); err != nil {
-		s.renderCheckForm(w, s.interactive.RenderForm(), fmt.Sprintf("invalid form: %v", err))
+		s.renderCheckForm(w, fields, fmt.Sprintf("invalid form: %v", err))
 		return
 	}
 
 	opts, err := s.interactive.ParseForm(r)
 	if err != nil {
-		s.renderCheckForm(w, s.interactive.RenderForm(), err.Error())
+		s.renderCheckForm(w, fields, err.Error())
 		return
 	}
 
@@ -135,7 +136,7 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 		result.States = s.evaluateRules(r.Context(), obs, opts, nil)
 	}
 
-	ctx := checker.NewReportContext(raw, related)
+	ctx := checker.NewReportContext(raw, related, result.States)
 
 	if reporter, ok := s.provider.(checker.CheckerHTMLReporter); ok {
 		html, rerr := reporter.GetHTMLReport(ctx)

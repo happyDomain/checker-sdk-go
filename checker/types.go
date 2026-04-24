@@ -298,32 +298,40 @@ type CheckAggregator interface {
 	Aggregate(states []CheckState) CheckState
 }
 
-// ReportContext carries both the primary observation payload and any
-// observations produced by other checkers that cover the same discovery
-// entries. Hosts build a ReportContext and hand it to reporter methods.
+// ReportContext carries the primary observation payload, any observations
+// produced by other checkers that cover the same discovery entries, and the
+// CheckStates produced by this checker's rules for the same observation.
+// Hosts build a ReportContext and hand it to reporter methods.
 //
-// The method set is deliberately tiny: a single primary payload (Data) and
-// a query for related observations by key (Related). Hosts return nil from
-// Related when there is nothing to relate; reporters must tolerate that.
+// Reporters use States() to render rule-driven sections (for example a
+// "fix these first" list) without re-deriving severity or hints from the
+// raw payload. Hosts that have not yet threaded rule output into the
+// report pipeline return nil; reporters must treat a nil or empty slice
+// as "not provided" and fall back to a data-only rendering. The same
+// nil-tolerance applies to Related(key).
 type ReportContext interface {
 	Data() json.RawMessage
 	Related(key ObservationKey) []RelatedObservation
+	States() []CheckState
 }
 
-// NewReportContext returns a ReportContext backed by a primary payload and
-// a pre-resolved map of related observations by key. The SDK's /report HTTP
-// handler uses this to wrap ExternalReportRequest contents; hosts and tests
-// can use it whenever they already have the related observations in memory.
+// NewReportContext returns a ReportContext backed by a primary payload, a
+// pre-resolved map of related observations by key, and the CheckStates
+// produced by the checker's rules on this observation. The SDK's /report
+// HTTP handler uses this to wrap ExternalReportRequest contents; hosts and
+// tests can use it whenever they already have that material in memory.
 //
-// Passing a nil or empty related map is fine; Related(key) will then return
-// nil, just like StaticReportContext.
-func NewReportContext(data json.RawMessage, related map[ObservationKey][]RelatedObservation) ReportContext {
-	return fixedReportContext{data: data, related: related}
+// Passing a nil related map or a nil states slice is fine; Related(key)
+// and States() will then return nil respectively. Use StaticReportContext
+// as a shorthand when both are absent.
+func NewReportContext(data json.RawMessage, related map[ObservationKey][]RelatedObservation, states []CheckState) ReportContext {
+	return fixedReportContext{data: data, related: related, states: states}
 }
 
-// StaticReportContext is a shorthand for NewReportContext(data, nil): a
-// ReportContext with a primary payload and no related observations.
-// Intended for tests and ad-hoc callers that have no lineage to supply.
+// StaticReportContext is a shorthand for NewReportContext(data, nil, nil):
+// a ReportContext with a primary payload, no related observations, and no
+// rule states. Intended for tests and ad-hoc callers that have no lineage
+// or rule output to supply.
 func StaticReportContext(data json.RawMessage) ReportContext {
 	return fixedReportContext{data: data}
 }
@@ -331,6 +339,7 @@ func StaticReportContext(data json.RawMessage) ReportContext {
 type fixedReportContext struct {
 	data    json.RawMessage
 	related map[ObservationKey][]RelatedObservation
+	states  []CheckState
 }
 
 func (f fixedReportContext) Data() json.RawMessage { return f.data }
@@ -340,6 +349,7 @@ func (f fixedReportContext) Related(key ObservationKey) []RelatedObservation {
 	}
 	return f.related[key]
 }
+func (f fixedReportContext) States() []CheckState { return f.states }
 
 // CheckerHTMLReporter is an optional interface that observation providers can
 // implement to render their stored data as a full HTML document (for iframe embedding).
@@ -486,13 +496,20 @@ type ExternalEvaluateResponse struct {
 // Related carries observations produced by other checkers on DiscoveryEntry
 // records originally published by the target of this report, that is, the
 // cross-checker lineage that ObservationGetter.GetRelated would expose in
-// the in-process path. The host composes it before making the HTTP request;
-// when absent, the remote checker receives a context that reports no
-// related observations (equivalent to StaticReportContext).
+// the in-process path. States carries the CheckStates the host produced by
+// evaluating this checker's rules against the same observation, letting
+// reporters render rule-driven sections (for example a "fix these first"
+// list) without re-deriving severity or hints from Data.
+//
+// The host composes both fields before making the HTTP request. When both
+// are absent, the remote checker receives a context equivalent to
+// StaticReportContext (no related observations and no states); the
+// reporter then falls back to a data-only rendering.
 type ExternalReportRequest struct {
 	Key     ObservationKey                          `json:"key"`
 	Data    json.RawMessage                         `json:"data"`
 	Related map[ObservationKey][]RelatedObservation `json:"related,omitempty"`
+	States  []CheckState                            `json:"states,omitempty"`
 }
 
 // HealthResponse is returned by GET /health on a remote checker endpoint.

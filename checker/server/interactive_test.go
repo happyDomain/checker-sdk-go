@@ -355,6 +355,65 @@ func TestCheck_Submit_RunsSiblingAndExposesRelated(t *testing.T) {
 	}
 }
 
+// interactiveStatesPeekingProvider implements Interactive + HTMLReporter
+// and captures the ReportContext.States() seen at GetHTMLReport time.
+type interactiveStatesPeekingProvider struct {
+	key  checker.ObservationKey
+	def  *checker.CheckerDefinition
+	seen *[]checker.CheckState
+}
+
+func (p *interactiveStatesPeekingProvider) Key() checker.ObservationKey { return p.key }
+func (p *interactiveStatesPeekingProvider) Collect(ctx context.Context, opts checker.CheckerOptions) (any, error) {
+	return map[string]string{"ok": "1"}, nil
+}
+func (p *interactiveStatesPeekingProvider) Definition() *checker.CheckerDefinition { return p.def }
+func (p *interactiveStatesPeekingProvider) RenderForm() []checker.CheckerOptionField {
+	return []checker.CheckerOptionField{{Id: "domain", Type: "string"}}
+}
+func (p *interactiveStatesPeekingProvider) ParseForm(r *http.Request) (checker.CheckerOptions, error) {
+	return checker.CheckerOptions{"domain": r.FormValue("domain")}, nil
+}
+func (p *interactiveStatesPeekingProvider) GetHTMLReport(ctx checker.ReportContext) (string, error) {
+	if p.seen != nil {
+		*p.seen = ctx.States()
+	}
+	return "<p>ok</p>", nil
+}
+
+// TestCheck_Submit_ThreadsStatesIntoReport verifies that CheckStates
+// produced by evaluateRules during POST /check are threaded into the
+// ReportContext handed to GetHTMLReport. Without this wiring, the /check
+// UI can show states in its own section but the embedded report would
+// have to re-derive severity/hints from Data.
+func TestCheck_Submit_ThreadsStatesIntoReport(t *testing.T) {
+	var seen []checker.CheckState
+	p := &interactiveStatesPeekingProvider{
+		key: "test",
+		def: &checker.CheckerDefinition{
+			ID:    "test",
+			Rules: []checker.CheckRule{&dummyRule{name: "rule1", desc: "first"}},
+		},
+		seen: &seen,
+	}
+	srv := New(p)
+	defer srv.Close()
+
+	rec := postForm(srv.Handler(), "/check", url.Values{"domain": {"example.com"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /check = %d, want 200", rec.Code)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("reporter saw %d states, want 1", len(seen))
+	}
+	if seen[0].RuleName != "rule1" {
+		t.Errorf("state RuleName = %q, want %q", seen[0].RuleName, "rule1")
+	}
+	if seen[0].Status != checker.StatusOK {
+		t.Errorf("state Status = %v, want %v", seen[0].Status, checker.StatusOK)
+	}
+}
+
 func TestCheck_Submit_NoSibling_LeavesRelatedEmpty(t *testing.T) {
 	p := &interactiveProvider{
 		testProvider: &testProvider{

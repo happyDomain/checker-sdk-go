@@ -357,7 +357,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		html, err := reporter.GetHTMLReport(checker.NewReportContext(req.Data, req.Related))
+		html, err := reporter.GetHTMLReport(checker.NewReportContext(req.Data, req.Related, req.States))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to generate HTML report: %v", err), http.StatusInternalServerError)
 			return
@@ -375,7 +375,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metrics, err := reporter.ExtractMetrics(checker.NewReportContext(req.Data, req.Related), time.Now())
+	metrics, err := reporter.ExtractMetrics(checker.NewReportContext(req.Data, req.Related, req.States), time.Now())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to extract metrics: %v", err),
