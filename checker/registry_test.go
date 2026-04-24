@@ -74,7 +74,7 @@ func TestRegisterExternalizableChecker_AppendsEndpointOnce(t *testing.T) {
 	}
 
 	// Second registration of the same definition pointer must NOT append a
-	// second "endpoint" AdminOpt — the duplicate check has to fire before
+	// second "endpoint" AdminOpt, the duplicate check has to fire before
 	// the append, otherwise we silently mutate the live definition.
 	RegisterExternalizableChecker(c)
 	if n := len(c.Options.AdminOpts); n != 1 {

@@ -171,7 +171,7 @@ func (s *Server) ListenAndServe(addr string) error {
 
 // Close stops the background load-average sampler goroutine. It is safe to
 // call multiple times; subsequent calls are no-ops. Close does not shut down
-// any underlying http.Server — callers own that lifecycle.
+// any underlying http.Server, callers own that lifecycle.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancelSampler()

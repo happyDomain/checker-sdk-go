@@ -226,7 +226,7 @@ func TestCheck_NoReporters(t *testing.T) {
 
 // bareInteractiveProvider implements only the required interfaces
 // (ObservationProvider, CheckerDefinitionProvider, CheckerInteractive)
-// — no reporters.
+//, no reporters.
 type bareInteractiveProvider struct {
 	key ObservationKey
 	def *CheckerDefinition

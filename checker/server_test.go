@@ -430,7 +430,7 @@ func TestServer_Evaluate_RulePreservesCode(t *testing.T) {
 
 func TestServer_Report_HTML(t *testing.T) {
 	p := &testProvider{
-		key: "test",
+		key:        "test",
 		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
 		htmlFn: func(raw json.RawMessage) (string, error) {
 			return "<p>hello</p>", nil
@@ -454,7 +454,7 @@ func TestServer_Report_HTML(t *testing.T) {
 
 func TestServer_Report_Metrics(t *testing.T) {
 	p := &testProvider{
-		key: "test",
+		key:        "test",
 		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
 	}
 	srv := newTestServer(p)
@@ -478,7 +478,7 @@ func TestServer_Report_Metrics(t *testing.T) {
 func TestServer_Report_Related(t *testing.T) {
 	var gotRelated []RelatedObservation
 	p := &testProvider{
-		key: "test",
+		key:        "test",
 		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
 	}
 	// Replace htmlFn with one that peeks at a related key. We can't do that

@@ -52,7 +52,7 @@ srv.Handle("POST /webhook", srv.TrackWork(myWebhookHandler))
 log.Fatal(srv.ListenAndServe(":8080"))
 ```
 
-Patterns that collide with built-in routes panic at registration —
+Patterns that collide with built-in routes panic at registration:
 pick non-overlapping paths. Custom handlers are not wrapped by the
 load-tracking middleware unless you opt in via `TrackWork`.
 
@@ -74,7 +74,7 @@ type CheckerInteractive interface {
   pipeline, and returns a consolidated HTML page.
 
 `ParseForm` is where the checker replaces what happyDomain would normally
-auto-fill (zone records, service payload, …) — typically by issuing its
+auto-fill (zone records, service payload, …), typically by issuing its
 own DNS queries from the human-supplied inputs.
 
 ## License
