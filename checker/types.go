@@ -372,21 +372,6 @@ type CheckerDefinitionProvider interface {
 	Definition() *CheckerDefinition
 }
 
-// InteractiveRelatedProviders is an optional interface an interactive
-// ObservationProvider can co-implement to declare sibling providers whose
-// Collect the SDK runs in-process during /check. Their results are
-// exposed as RelatedObservations on ObservationGetter and ReportContext,
-// mirroring the cross-checker lineage a happyDomain host resolves.
-//
-// For each sibling the SDK seeds options from the primary and, when the
-// primary implements DiscoveryPublisher, writes its entries into any
-// sibling option tagged AutoFill == AutoFillDiscoveryEntries. Sibling
-// errors are logged and skipped so the primary result still reaches the
-// user.
-type InteractiveRelatedProviders interface {
-	RelatedProviders() []ObservationProvider
-}
-
 // CheckerDefinition is the complete definition of a checker, registered via init().
 type CheckerDefinition struct {
 	ID              string                      `json:"id"`

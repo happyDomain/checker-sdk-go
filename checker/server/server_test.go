@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package checker
+package server
 
 import (
 	"bytes"
@@ -24,37 +24,39 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.happydns.org/checker-sdk-go/checker"
 )
 
 // --- test doubles ---
 
 type testProvider struct {
-	key        ObservationKey
-	collectFn  func(ctx context.Context, opts CheckerOptions) (any, error)
-	definition *CheckerDefinition
+	key        checker.ObservationKey
+	collectFn  func(ctx context.Context, opts checker.CheckerOptions) (any, error)
+	definition *checker.CheckerDefinition
 	htmlFn     func(raw json.RawMessage) (string, error)
-	metricsFn  func(raw json.RawMessage, t time.Time) ([]CheckMetric, error)
+	metricsFn  func(raw json.RawMessage, t time.Time) ([]checker.CheckMetric, error)
 }
 
-func (p *testProvider) Key() ObservationKey { return p.key }
-func (p *testProvider) Collect(ctx context.Context, opts CheckerOptions) (any, error) {
+func (p *testProvider) Key() checker.ObservationKey { return p.key }
+func (p *testProvider) Collect(ctx context.Context, opts checker.CheckerOptions) (any, error) {
 	if p.collectFn != nil {
 		return p.collectFn(ctx, opts)
 	}
 	return map[string]string{"result": "ok"}, nil
 }
-func (p *testProvider) Definition() *CheckerDefinition { return p.definition }
-func (p *testProvider) GetHTMLReport(ctx ReportContext) (string, error) {
+func (p *testProvider) Definition() *checker.CheckerDefinition { return p.definition }
+func (p *testProvider) GetHTMLReport(ctx checker.ReportContext) (string, error) {
 	if p.htmlFn != nil {
 		return p.htmlFn(ctx.Data())
 	}
 	return "<h1>report</h1>", nil
 }
-func (p *testProvider) ExtractMetrics(ctx ReportContext, t time.Time) ([]CheckMetric, error) {
+func (p *testProvider) ExtractMetrics(ctx checker.ReportContext, t time.Time) ([]checker.CheckMetric, error) {
 	if p.metricsFn != nil {
 		return p.metricsFn(ctx.Data(), t)
 	}
-	return []CheckMetric{{Name: "m1", Value: 1.0, Timestamp: t}}, nil
+	return []checker.CheckMetric{{Name: "m1", Value: 1.0, Timestamp: t}}, nil
 }
 
 // dummyRule is a minimal CheckRule for testing evaluate.
@@ -65,8 +67,8 @@ type dummyRule struct {
 
 func (r *dummyRule) Name() string        { return r.name }
 func (r *dummyRule) Description() string { return r.desc }
-func (r *dummyRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState {
-	return []CheckState{{Status: StatusOK, Message: r.name + " passed"}}
+func (r *dummyRule) Evaluate(ctx context.Context, obs checker.ObservationGetter, opts checker.CheckerOptions) []checker.CheckState {
+	return []checker.CheckState{{Status: checker.StatusOK, Message: r.name + " passed"}}
 }
 
 // codedRule emits a CheckState with a pre-set Code, to verify the server
@@ -77,14 +79,25 @@ type codedRule struct {
 
 func (r *codedRule) Name() string        { return r.name }
 func (r *codedRule) Description() string { return "" }
-func (r *codedRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState {
-	return []CheckState{{Status: StatusWarn, Code: r.code, Message: "coded finding"}}
+func (r *codedRule) Evaluate(ctx context.Context, obs checker.ObservationGetter, opts checker.CheckerOptions) []checker.CheckState {
+	return []checker.CheckState{{Status: checker.StatusWarn, Code: r.code, Message: "coded finding"}}
+}
+
+// stubProvider is a minimal ObservationProvider that does not implement
+// CheckerDefinitionProvider, used to verify conditional endpoint registration.
+type stubProvider struct {
+	key checker.ObservationKey
+}
+
+func (s stubProvider) Key() checker.ObservationKey { return s.key }
+func (s stubProvider) Collect(ctx context.Context, opts checker.CheckerOptions) (any, error) {
+	return nil, nil
 }
 
 // --- helpers ---
 
 func newTestServer(p *testProvider) *Server {
-	return NewServer(p)
+	return New(p)
 }
 
 func doRequest(handler http.Handler, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -107,14 +120,14 @@ func doRequest(handler http.Handler, method, path string, body any, headers map[
 // --- tests ---
 
 func TestServer_Health(t *testing.T) {
-	p := &testProvider{key: "test", definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}}}
+	p := &testProvider{key: "test", definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}}}
 	srv := newTestServer(p)
 	defer srv.Close()
 	rec := doRequest(srv.Handler(), "GET", "/health", nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /health = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var resp HealthResponse
+	var resp checker.HealthResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode /health: %v", err)
 	}
@@ -143,8 +156,8 @@ func TestServer_Health_TracksInFlight(t *testing.T) {
 	var collectEntered sync.WaitGroup
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}},
-		collectFn: func(ctx context.Context, opts CheckerOptions) (any, error) {
+		definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}},
+		collectFn: func(ctx context.Context, opts checker.CheckerOptions) (any, error) {
 			collectEntered.Done()
 			<-release
 			return map[string]string{"ok": "1"}, nil
@@ -161,7 +174,7 @@ func TestServer_Health_TracksInFlight(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer clientsDone.Done()
-			doRequest(handler, "POST", "/collect", ExternalCollectRequest{Key: "test"}, nil)
+			doRequest(handler, "POST", "/collect", checker.ExternalCollectRequest{Key: "test"}, nil)
 		}()
 	}
 
@@ -170,7 +183,7 @@ func TestServer_Health_TracksInFlight(t *testing.T) {
 
 	// Record /health mid-flight. Also hammer it to verify /health polls
 	// do not inflate InFlight or TotalRequests.
-	var mid HealthResponse
+	var mid checker.HealthResponse
 	for i := 0; i < 5; i++ {
 		rec := doRequest(handler, "GET", "/health", nil, nil)
 		if rec.Code != http.StatusOK {
@@ -192,7 +205,7 @@ func TestServer_Health_TracksInFlight(t *testing.T) {
 	clientsDone.Wait()
 
 	rec := doRequest(handler, "GET", "/health", nil, nil)
-	var after HealthResponse
+	var after checker.HealthResponse
 	if err := json.NewDecoder(rec.Body).Decode(&after); err != nil {
 		t.Fatalf("decode /health: %v", err)
 	}
@@ -237,7 +250,7 @@ func TestUpdateLoadAvg(t *testing.T) {
 }
 
 func TestServer_Close_Idempotent(t *testing.T) {
-	p := &testProvider{key: "test", definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}}}
+	p := &testProvider{key: "test", definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}}}
 	srv := newTestServer(p)
 	done := make(chan error, 2)
 	go func() { done <- srv.Close() }()
@@ -257,20 +270,20 @@ func TestServer_Close_Idempotent(t *testing.T) {
 func TestServer_Collect_Success(t *testing.T) {
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}},
-		collectFn: func(ctx context.Context, opts CheckerOptions) (any, error) {
+		definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}},
+		collectFn: func(ctx context.Context, opts checker.CheckerOptions) (any, error) {
 			return map[string]int{"count": 42}, nil
 		},
 	}
 	srv := newTestServer(p)
-	rec := doRequest(srv.Handler(), "POST", "/collect", ExternalCollectRequest{
+	rec := doRequest(srv.Handler(), "POST", "/collect", checker.ExternalCollectRequest{
 		Key:     "test",
-		Options: CheckerOptions{"a": "b"},
+		Options: checker.CheckerOptions{"a": "b"},
 	}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /collect = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var resp ExternalCollectResponse
+	var resp checker.ExternalCollectResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Error != "" {
 		t.Errorf("POST /collect error = %q, want empty", resp.Error)
@@ -283,17 +296,17 @@ func TestServer_Collect_Success(t *testing.T) {
 func TestServer_Collect_ProviderError(t *testing.T) {
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}},
-		collectFn: func(ctx context.Context, opts CheckerOptions) (any, error) {
+		definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}},
+		collectFn: func(ctx context.Context, opts checker.CheckerOptions) (any, error) {
 			return nil, errors.New("provider failed")
 		},
 	}
 	srv := newTestServer(p)
-	rec := doRequest(srv.Handler(), "POST", "/collect", ExternalCollectRequest{Key: "test"}, nil)
+	rec := doRequest(srv.Handler(), "POST", "/collect", checker.ExternalCollectRequest{Key: "test"}, nil)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /collect = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
-	var resp ExternalCollectResponse
+	var resp checker.ExternalCollectResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Error == "" {
 		t.Error("expected error in response, got empty")
@@ -301,7 +314,7 @@ func TestServer_Collect_ProviderError(t *testing.T) {
 }
 
 func TestServer_Collect_BadBody(t *testing.T) {
-	p := &testProvider{key: "test", definition: &CheckerDefinition{ID: "test", Rules: []CheckRule{}}}
+	p := &testProvider{key: "test", definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}}}
 	srv := newTestServer(p)
 	req := httptest.NewRequest("POST", "/collect", bytes.NewBufferString("{invalid"))
 	rec := httptest.NewRecorder()
@@ -312,10 +325,10 @@ func TestServer_Collect_BadBody(t *testing.T) {
 }
 
 func TestServer_Definition(t *testing.T) {
-	def := &CheckerDefinition{
+	def := &checker.CheckerDefinition{
 		ID:   "test-checker",
 		Name: "Test Checker",
-		Rules: []CheckRule{
+		Rules: []checker.CheckRule{
 			&dummyRule{name: "rule1", desc: "first rule"},
 		},
 	}
@@ -325,7 +338,7 @@ func TestServer_Definition(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /definition = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var got CheckerDefinition
+	var got checker.CheckerDefinition
 	json.NewDecoder(rec.Body).Decode(&got)
 	if got.ID != "test-checker" {
 		t.Errorf("definition ID = %q, want \"test-checker\"", got.ID)
@@ -336,10 +349,10 @@ func TestServer_Definition(t *testing.T) {
 }
 
 func TestServer_Evaluate(t *testing.T) {
-	def := &CheckerDefinition{
+	def := &checker.CheckerDefinition{
 		ID:   "test-checker",
 		Name: "Test Checker",
-		Rules: []CheckRule{
+		Rules: []checker.CheckRule{
 			&dummyRule{name: "rule1", desc: "first rule"},
 			&dummyRule{name: "rule2", desc: "second rule"},
 		},
@@ -347,16 +360,16 @@ func TestServer_Evaluate(t *testing.T) {
 	p := &testProvider{key: "test", definition: def}
 	srv := newTestServer(p)
 
-	rec := doRequest(srv.Handler(), "POST", "/evaluate", ExternalEvaluateRequest{
-		Observations: map[ObservationKey]json.RawMessage{
+	rec := doRequest(srv.Handler(), "POST", "/evaluate", checker.ExternalEvaluateRequest{
+		Observations: map[checker.ObservationKey]json.RawMessage{
 			"test": json.RawMessage(`{"count":42}`),
 		},
-		Options: CheckerOptions{},
+		Options: checker.CheckerOptions{},
 	}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /evaluate = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var resp ExternalEvaluateResponse
+	var resp checker.ExternalEvaluateResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if len(resp.States) != 2 {
 		t.Fatalf("evaluate states = %d, want 2", len(resp.States))
@@ -370,9 +383,9 @@ func TestServer_Evaluate(t *testing.T) {
 }
 
 func TestServer_Evaluate_DisabledRule(t *testing.T) {
-	def := &CheckerDefinition{
+	def := &checker.CheckerDefinition{
 		ID: "test-checker",
-		Rules: []CheckRule{
+		Rules: []checker.CheckRule{
 			&dummyRule{name: "rule1", desc: "first"},
 			&dummyRule{name: "rule2", desc: "second"},
 		},
@@ -380,8 +393,8 @@ func TestServer_Evaluate_DisabledRule(t *testing.T) {
 	p := &testProvider{key: "test", definition: def}
 	srv := newTestServer(p)
 
-	rec := doRequest(srv.Handler(), "POST", "/evaluate", ExternalEvaluateRequest{
-		Observations: map[ObservationKey]json.RawMessage{
+	rec := doRequest(srv.Handler(), "POST", "/evaluate", checker.ExternalEvaluateRequest{
+		Observations: map[checker.ObservationKey]json.RawMessage{
 			"test": json.RawMessage(`{}`),
 		},
 		EnabledRules: map[string]bool{"rule1": false},
@@ -389,7 +402,7 @@ func TestServer_Evaluate_DisabledRule(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /evaluate = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var resp ExternalEvaluateResponse
+	var resp checker.ExternalEvaluateResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if len(resp.States) != 1 {
 		t.Fatalf("evaluate with disabled rule: states = %d, want 1", len(resp.States))
@@ -400,22 +413,22 @@ func TestServer_Evaluate_DisabledRule(t *testing.T) {
 }
 
 func TestServer_Evaluate_RulePreservesCode(t *testing.T) {
-	def := &CheckerDefinition{
+	def := &checker.CheckerDefinition{
 		ID: "test-checker",
-		Rules: []CheckRule{
+		Rules: []checker.CheckRule{
 			&codedRule{name: "ruleA", code: "too_many_lookups"},
 		},
 	}
 	p := &testProvider{key: "test", definition: def}
 	srv := newTestServer(p)
 
-	rec := doRequest(srv.Handler(), "POST", "/evaluate", ExternalEvaluateRequest{
-		Observations: map[ObservationKey]json.RawMessage{"test": json.RawMessage(`{}`)},
+	rec := doRequest(srv.Handler(), "POST", "/evaluate", checker.ExternalEvaluateRequest{
+		Observations: map[checker.ObservationKey]json.RawMessage{"test": json.RawMessage(`{}`)},
 	}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /evaluate = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var resp ExternalEvaluateResponse
+	var resp checker.ExternalEvaluateResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if len(resp.States) != 1 {
 		t.Fatalf("states = %d, want 1", len(resp.States))
@@ -431,13 +444,13 @@ func TestServer_Evaluate_RulePreservesCode(t *testing.T) {
 func TestServer_Report_HTML(t *testing.T) {
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
 		htmlFn: func(raw json.RawMessage) (string, error) {
 			return "<p>hello</p>", nil
 		},
 	}
 	srv := newTestServer(p)
-	rec := doRequest(srv.Handler(), "POST", "/report", ExternalReportRequest{
+	rec := doRequest(srv.Handler(), "POST", "/report", checker.ExternalReportRequest{
 		Key:  "test",
 		Data: json.RawMessage(`{}`),
 	}, map[string]string{"Accept": "text/html"})
@@ -455,17 +468,17 @@ func TestServer_Report_HTML(t *testing.T) {
 func TestServer_Report_Metrics(t *testing.T) {
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
 	}
 	srv := newTestServer(p)
-	rec := doRequest(srv.Handler(), "POST", "/report", ExternalReportRequest{
+	rec := doRequest(srv.Handler(), "POST", "/report", checker.ExternalReportRequest{
 		Key:  "test",
 		Data: json.RawMessage(`{}`),
 	}, map[string]string{"Accept": "application/json"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /report metrics = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var metrics []CheckMetric
+	var metrics []checker.CheckMetric
 	json.NewDecoder(rec.Body).Decode(&metrics)
 	if len(metrics) != 1 {
 		t.Errorf("metrics count = %d, want 1", len(metrics))
@@ -476,25 +489,25 @@ func TestServer_Report_Metrics(t *testing.T) {
 // ExternalReportRequest.Related through to the provider's ReportContext,
 // the fix for the "remote checkers can't see related observations" gap.
 func TestServer_Report_Related(t *testing.T) {
-	var gotRelated []RelatedObservation
+	var gotRelated []checker.RelatedObservation
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
 	}
 	// Replace htmlFn with one that peeks at a related key. We can't do that
 	// directly through testProvider's htmlFn (which only sees raw), so
 	// bind to GetHTMLReport via an inline wrapper: use a per-test provider
 	// that captures the ReportContext before delegating to the template.
-	srv := NewServer(&relatedPeekingProvider{
+	srv := New(&relatedPeekingProvider{
 		base:   p,
 		target: &gotRelated,
 	})
 	defer srv.Close()
 
-	req := ExternalReportRequest{
+	req := checker.ExternalReportRequest{
 		Key:  "test",
 		Data: json.RawMessage(`{}`),
-		Related: map[ObservationKey][]RelatedObservation{
+		Related: map[checker.ObservationKey][]checker.RelatedObservation{
 			"tls_probes": {
 				{CheckerID: "tls", Key: "tls_probes", Data: json.RawMessage(`{"ok":true}`), Ref: "ep-1"},
 			},
@@ -516,15 +529,15 @@ func TestServer_Report_Related(t *testing.T) {
 // Related("tls_probes") slice observed at GetHTMLReport time into target.
 type relatedPeekingProvider struct {
 	base   *testProvider
-	target *[]RelatedObservation
+	target *[]checker.RelatedObservation
 }
 
-func (p *relatedPeekingProvider) Key() ObservationKey { return p.base.Key() }
-func (p *relatedPeekingProvider) Collect(ctx context.Context, opts CheckerOptions) (any, error) {
+func (p *relatedPeekingProvider) Key() checker.ObservationKey { return p.base.Key() }
+func (p *relatedPeekingProvider) Collect(ctx context.Context, opts checker.CheckerOptions) (any, error) {
 	return p.base.Collect(ctx, opts)
 }
-func (p *relatedPeekingProvider) Definition() *CheckerDefinition { return p.base.definition }
-func (p *relatedPeekingProvider) GetHTMLReport(ctx ReportContext) (string, error) {
+func (p *relatedPeekingProvider) Definition() *checker.CheckerDefinition { return p.base.definition }
+func (p *relatedPeekingProvider) GetHTMLReport(ctx checker.ReportContext) (string, error) {
 	*p.target = ctx.Related("tls_probes")
 	return "<p>ok</p>", nil
 }
@@ -532,7 +545,7 @@ func (p *relatedPeekingProvider) GetHTMLReport(ctx ReportContext) (string, error
 func TestServer_Report_BadBody(t *testing.T) {
 	p := &testProvider{
 		key:        "test",
-		definition: &CheckerDefinition{ID: "test-checker", Rules: []CheckRule{}},
+		definition: &checker.CheckerDefinition{ID: "test-checker", Rules: []checker.CheckRule{}},
 	}
 	srv := newTestServer(p)
 	req := httptest.NewRequest("POST", "/report", bytes.NewBufferString("{bad"))
@@ -546,7 +559,7 @@ func TestServer_Report_BadBody(t *testing.T) {
 func TestServer_NoDefinition_NoEvaluateEndpoint(t *testing.T) {
 	// A provider that does NOT implement CheckerDefinitionProvider
 	p := &stubProvider{key: "basic"}
-	srv := NewServer(p)
+	srv := New(p)
 	rec := doRequest(srv.Handler(), "POST", "/evaluate", nil, nil)
 	// Should 404 or 405 since /evaluate is not registered
 	if rec.Code == http.StatusOK {

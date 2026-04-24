@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package checker
+package server
 
 import (
 	"bytes"
@@ -24,29 +24,31 @@ import (
 	"maps"
 	"net/http"
 	"time"
+
+	"git.happydns.org/checker-sdk-go/checker"
 )
 
-// CheckerInteractive is an optional interface that observation providers
+// Interactive is an optional interface that observation providers
 // can implement to expose a human-facing web form usable standalone,
 // outside of a happyDomain host. Detect support with a type assertion:
-// _, ok := provider.(CheckerInteractive).
+// _, ok := provider.(server.Interactive).
 //
 // When the provider implements it, Server binds GET and POST on /check.
 // GET renders an HTML form built from RenderForm(). POST calls ParseForm
-// to obtain the CheckerOptions, then runs the standard pipeline
+// to obtain the checker.CheckerOptions, then runs the standard pipeline
 // (Collect, Evaluate, GetHTMLReport, ExtractMetrics) and renders a
 // consolidated result page.
 //
 // Unlike /evaluate, which relies on happyDomain to fill AutoFill-backed
-// options from execution context, a CheckerInteractive implementation is
+// options from execution context, an Interactive implementation is
 // responsible for resolving whatever it needs from the human inputs
 // (typically via direct DNS queries) before Collect runs.
-type CheckerInteractive interface {
+type Interactive interface {
 	// RenderForm returns the fields the human must fill in to bootstrap
 	// a check. Typically a minimal set (domain name, nameserver to
 	// query, …) that ParseForm expands into the full CheckerOptions
 	// that Collect expects.
-	RenderForm() []CheckerOptionField
+	RenderForm() []checker.CheckerOptionField
 
 	// ParseForm reads the submitted form and returns the CheckerOptions
 	// ready to feed Collect. It is the checker's responsibility to do
@@ -54,14 +56,29 @@ type CheckerInteractive interface {
 	// that would normally be auto-filled by happyDomain. Returning an
 	// error causes the SDK to re-render the form with the error
 	// displayed.
-	ParseForm(r *http.Request) (CheckerOptions, error)
+	ParseForm(r *http.Request) (checker.CheckerOptions, error)
+}
+
+// Siblings is an optional interface an interactive ObservationProvider
+// can co-implement to declare sibling providers whose Collect the SDK
+// runs in-process during /check. Their results are exposed as
+// RelatedObservations on ObservationGetter and ReportContext, mirroring
+// the cross-checker lineage a happyDomain host resolves.
+//
+// For each sibling the SDK seeds options from the primary and, when the
+// primary implements DiscoveryPublisher, writes its entries into any
+// sibling option tagged AutoFill == checker.AutoFillDiscoveryEntries.
+// Sibling errors are logged and skipped so the primary result still
+// reaches the user.
+type Siblings interface {
+	RelatedProviders() []checker.ObservationProvider
 }
 
 // checkResult holds everything the result page needs to render.
 type checkResult struct {
 	Title      string
-	States     []CheckState
-	Metrics    []CheckMetric
+	States     []checker.CheckState
+	Metrics    []checker.CheckMetric
 	ReportHTML string
 	CollectErr string
 	ReportErr  string
@@ -70,7 +87,7 @@ type checkResult struct {
 
 type checkFormPage struct {
 	Title  string
-	Fields []CheckerOptionField
+	Fields []checker.CheckerOptionField
 	Error  string
 }
 
@@ -110,7 +127,7 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if s.definition != nil {
 		obs := &mapObservationGetter{
-			data: map[ObservationKey]json.RawMessage{
+			data: map[checker.ObservationKey]json.RawMessage{
 				s.provider.Key(): raw,
 			},
 			related: related,
@@ -118,9 +135,9 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 		result.States = s.evaluateRules(r.Context(), obs, opts, nil)
 	}
 
-	ctx := NewReportContext(raw, related)
+	ctx := checker.NewReportContext(raw, related)
 
-	if reporter, ok := s.provider.(CheckerHTMLReporter); ok {
+	if reporter, ok := s.provider.(checker.CheckerHTMLReporter); ok {
 		html, rerr := reporter.GetHTMLReport(ctx)
 		if rerr != nil {
 			result.ReportErr = rerr.Error()
@@ -129,7 +146,7 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if reporter, ok := s.provider.(CheckerMetricsReporter); ok {
+	if reporter, ok := s.provider.(checker.CheckerMetricsReporter); ok {
 		metrics, merr := reporter.ExtractMetrics(ctx, time.Now())
 		if merr != nil {
 			result.MetricsErr = merr.Error()
@@ -141,11 +158,11 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 	s.renderCheckResult(w, result)
 }
 
-// collectRelatedObservations runs sibling providers declared via
-// InteractiveRelatedProviders and returns their results keyed by the
-// sibling's observation key. Sibling errors are logged and skipped.
-func (s *Server) collectRelatedObservations(ctx context.Context, opts CheckerOptions, data any) map[ObservationKey][]RelatedObservation {
-	irp, ok := s.provider.(InteractiveRelatedProviders)
+// collectRelatedObservations runs sibling providers declared via Siblings
+// and returns their results keyed by the sibling's observation key.
+// Sibling errors are logged and skipped.
+func (s *Server) collectRelatedObservations(ctx context.Context, opts checker.CheckerOptions, data any) map[checker.ObservationKey][]checker.RelatedObservation {
+	irp, ok := s.provider.(Siblings)
 	if !ok {
 		return nil
 	}
@@ -154,8 +171,8 @@ func (s *Server) collectRelatedObservations(ctx context.Context, opts CheckerOpt
 		return nil
 	}
 
-	var entries []DiscoveryEntry
-	if dp, ok := s.provider.(DiscoveryPublisher); ok {
+	var entries []checker.DiscoveryEntry
+	if dp, ok := s.provider.(checker.DiscoveryPublisher); ok {
 		e, err := dp.DiscoverEntries(data)
 		if err != nil {
 			log.Printf("interactive: DiscoverEntries failed: %v", err)
@@ -164,11 +181,11 @@ func (s *Server) collectRelatedObservations(ctx context.Context, opts CheckerOpt
 		}
 	}
 
-	related := make(map[ObservationKey][]RelatedObservation, len(siblings))
+	related := make(map[checker.ObservationKey][]checker.RelatedObservation, len(siblings))
 	for _, sp := range siblings {
 		sOpts := cloneOptions(opts)
 		siblingID := ""
-		if dp, ok := sp.(CheckerDefinitionProvider); ok {
+		if dp, ok := sp.(checker.CheckerDefinitionProvider); ok {
 			if def := dp.Definition(); def != nil {
 				siblingID = def.ID
 				if len(entries) > 0 {
@@ -186,7 +203,7 @@ func (s *Server) collectRelatedObservations(ctx context.Context, opts CheckerOpt
 			log.Printf("interactive: sibling %q marshal failed: %v", sp.Key(), err)
 			continue
 		}
-		related[sp.Key()] = append(related[sp.Key()], RelatedObservation{
+		related[sp.Key()] = append(related[sp.Key()], checker.RelatedObservation{
 			CheckerID:   siblingID,
 			Key:         sp.Key(),
 			Data:        raw,
@@ -196,16 +213,16 @@ func (s *Server) collectRelatedObservations(ctx context.Context, opts CheckerOpt
 	return related
 }
 
-func cloneOptions(opts CheckerOptions) CheckerOptions {
-	out := make(CheckerOptions, len(opts))
+func cloneOptions(opts checker.CheckerOptions) checker.CheckerOptions {
+	out := make(checker.CheckerOptions, len(opts))
 	maps.Copy(out, opts)
 	return out
 }
 
 // fillDiscoveryEntryOption mirrors the host's AutoFill wiring: it writes
-// entries into every option in def tagged AutoFill == AutoFillDiscoveryEntries.
-func fillDiscoveryEntryOption(opts CheckerOptions, def *CheckerDefinition, entries []DiscoveryEntry) {
-	scopes := [][]CheckerOptionDocumentation{
+// entries into every option in def tagged AutoFill == checker.AutoFillDiscoveryEntries.
+func fillDiscoveryEntryOption(opts checker.CheckerOptions, def *checker.CheckerDefinition, entries []checker.DiscoveryEntry) {
+	scopes := [][]checker.CheckerOptionDocumentation{
 		def.Options.AdminOpts,
 		def.Options.UserOpts,
 		def.Options.DomainOpts,
@@ -214,7 +231,7 @@ func fillDiscoveryEntryOption(opts CheckerOptions, def *CheckerDefinition, entri
 	}
 	for _, scope := range scopes {
 		for _, f := range scope {
-			if f.AutoFill == AutoFillDiscoveryEntries {
+			if f.AutoFill == checker.AutoFillDiscoveryEntries {
 				opts[f.Id] = entries
 			}
 		}
@@ -240,7 +257,7 @@ func renderHTML(w http.ResponseWriter, status int, tpl *template.Template, data 
 	w.Write(buf.Bytes())
 }
 
-func (s *Server) renderCheckForm(w http.ResponseWriter, fields []CheckerOptionField, errMsg string) {
+func (s *Server) renderCheckForm(w http.ResponseWriter, fields []checker.CheckerOptionField, errMsg string) {
 	status := http.StatusOK
 	if errMsg != "" {
 		status = http.StatusBadRequest
@@ -256,17 +273,17 @@ func (s *Server) renderCheckResult(w http.ResponseWriter, result *checkResult) {
 	renderHTML(w, http.StatusOK, checkResultTemplate, result)
 }
 
-func statusClass(s Status) string {
+func statusClass(s checker.Status) string {
 	switch s {
-	case StatusOK:
+	case checker.StatusOK:
 		return "ok"
-	case StatusInfo:
+	case checker.StatusInfo:
 		return "info"
-	case StatusWarn:
+	case checker.StatusWarn:
 		return "warn"
-	case StatusCrit:
+	case checker.StatusCrit:
 		return "crit"
-	case StatusError:
+	case checker.StatusError:
 		return "error"
 	default:
 		return "unknown"
@@ -298,7 +315,7 @@ func defaultBool(v any) bool {
 
 var templateFuncs = template.FuncMap{
 	"statusClass":   statusClass,
-	"statusString":  Status.String,
+	"statusString":  checker.Status.String,
 	"defaultString": defaultString,
 	"defaultBool":   defaultBool,
 }

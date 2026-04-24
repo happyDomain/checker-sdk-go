@@ -15,9 +15,22 @@
 package checker
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
+
+// dummyRule is a minimal CheckRule used only by tests in this package.
+type dummyRule struct {
+	name string
+	desc string
+}
+
+func (r *dummyRule) Name() string        { return r.name }
+func (r *dummyRule) Description() string { return r.desc }
+func (r *dummyRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState {
+	return []CheckState{{Status: StatusOK, Message: r.name + " passed"}}
+}
 
 func TestStatus_MarshalJSON(t *testing.T) {
 	tests := []struct {

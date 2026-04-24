@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package checker
+// Package server provides the HTTP server scaffolding used by standalone
+// checkers. It is separated from the core checker package so that plugin
+// and builtin builds, which never expose an HTTP endpoint, do not pay the
+// cost of net/http, html/template, and their transitive dependencies.
+package server
 
 import (
 	"context"
@@ -27,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"git.happydns.org/checker-sdk-go/checker"
 )
 
 // maxRequestBodySize is the maximum allowed size for incoming request bodies (1 MB).
@@ -58,21 +64,21 @@ func updateLoadAvg(prev [3]float64, sample float64) [3]float64 {
 
 // Server is a generic HTTP server for external checkers.
 // It always exposes /health and /collect. If the provider implements
-// CheckerDefinitionProvider, it also exposes /definition and /evaluate.
-// If the provider implements CheckerHTMLReporter or CheckerMetricsReporter,
-// it also exposes /report. If the provider implements CheckerInteractive,
+// checker.CheckerDefinitionProvider, it also exposes /definition and /evaluate.
+// If the provider implements checker.CheckerHTMLReporter or checker.CheckerMetricsReporter,
+// it also exposes /report. If the provider implements Interactive,
 // it also exposes /check (a human-facing web form).
 //
 // Security: Server does not perform any authentication or authorization.
 // It is intended to be run behind a reverse proxy or in a trusted network
 // where access control is handled externally (e.g. by the happyDomain server).
 type Server struct {
-	provider    ObservationProvider
-	definition  *CheckerDefinition
-	interactive CheckerInteractive
+	provider    checker.ObservationProvider
+	definition  *checker.CheckerDefinition
+	interactive Interactive
 	mux         *http.ServeMux
 
-	// startTime is captured in NewServer and used to compute uptime.
+	// startTime is captured in New and used to compute uptime.
 	startTime time.Time
 
 	// inFlight counts work requests (/collect, /evaluate, /report) currently
@@ -97,13 +103,13 @@ type Server struct {
 	closeOnce sync.Once
 }
 
-// NewServer creates a new checker HTTP server backed by the given provider.
+// New creates a new checker HTTP server backed by the given provider.
 // Additional endpoints are registered based on optional interfaces the provider implements.
 //
-// NewServer also starts a background goroutine that samples the in-flight
+// New also starts a background goroutine that samples the in-flight
 // request count every loadSampleInterval to compute the load averages
 // reported on /health. Call Close to stop it.
-func NewServer(provider ObservationProvider) *Server {
+func New(provider checker.ObservationProvider) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		provider:      provider,
@@ -115,7 +121,7 @@ func NewServer(provider ObservationProvider) *Server {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.Handle("POST /collect", s.TrackWork(http.HandlerFunc(s.handleCollect)))
 
-	if dp, ok := provider.(CheckerDefinitionProvider); ok {
+	if dp, ok := provider.(checker.CheckerDefinitionProvider); ok {
 		if def := dp.Definition(); def != nil {
 			s.definition = def
 			s.definition.BuildRulesInfo()
@@ -124,13 +130,13 @@ func NewServer(provider ObservationProvider) *Server {
 		}
 	}
 
-	if _, ok := provider.(CheckerHTMLReporter); ok {
+	if _, ok := provider.(checker.CheckerHTMLReporter); ok {
 		s.mux.Handle("POST /report", s.TrackWork(http.HandlerFunc(s.handleReport)))
-	} else if _, ok := provider.(CheckerMetricsReporter); ok {
+	} else if _, ok := provider.(checker.CheckerMetricsReporter); ok {
 		s.mux.Handle("POST /report", s.TrackWork(http.HandlerFunc(s.handleReport)))
 	}
 
-	if ip, ok := provider.(CheckerInteractive); ok {
+	if ip, ok := provider.(Interactive); ok {
 		s.interactive = ip
 		s.mux.HandleFunc("GET /check", s.handleCheckForm)
 		s.mux.Handle("POST /check", s.TrackWork(http.HandlerFunc(s.handleCheckSubmit)))
@@ -238,7 +244,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	for i := range load {
 		load[i] = math.Float64frombits(s.loadBits[i].Load())
 	}
-	writeJSON(w, http.StatusOK, HealthResponse{
+	writeJSON(w, http.StatusOK, checker.HealthResponse{
 		Status:        "ok",
 		Uptime:        time.Since(s.startTime).Seconds(),
 		NumCPU:        runtime.NumCPU(),
@@ -253,9 +259,9 @@ func (s *Server) handleDefinition(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
-	var req ExternalCollectRequest
+	var req checker.ExternalCollectRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ExternalCollectResponse{
+		writeJSON(w, http.StatusBadRequest, checker.ExternalCollectResponse{
 			Error: fmt.Sprintf("invalid request body: %v", err),
 		})
 		return
@@ -263,7 +269,7 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 
 	data, err := s.provider.Collect(r.Context(), req.Options)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, ExternalCollectResponse{
+		writeJSON(w, http.StatusInternalServerError, checker.ExternalCollectResponse{
 			Error: err.Error(),
 		})
 		return
@@ -271,18 +277,18 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := json.Marshal(data)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, ExternalCollectResponse{
+		writeJSON(w, http.StatusInternalServerError, checker.ExternalCollectResponse{
 			Error: fmt.Sprintf("failed to marshal result: %v", err),
 		})
 		return
 	}
 
-	resp := ExternalCollectResponse{Data: json.RawMessage(raw)}
+	resp := checker.ExternalCollectResponse{Data: json.RawMessage(raw)}
 
 	// Harvest discovery entries from the native Go value, before it goes
 	// out of scope. No re-parse; DiscoverEntries operates on the same
 	// object that was just marshaled above.
-	if dp, ok := s.provider.(DiscoveryPublisher); ok {
+	if dp, ok := s.provider.(checker.DiscoveryPublisher); ok {
 		entries, derr := dp.DiscoverEntries(data)
 		if derr != nil {
 			log.Printf("DiscoverEntries failed: %v", derr)
@@ -296,8 +302,8 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 
 // evaluateRules runs all definition rules against obs/opts, skipping any rule
 // whose name maps to false in enabledRules (nil means run all).
-func (s *Server) evaluateRules(ctx context.Context, obs ObservationGetter, opts CheckerOptions, enabledRules map[string]bool) []CheckState {
-	var states []CheckState
+func (s *Server) evaluateRules(ctx context.Context, obs checker.ObservationGetter, opts checker.CheckerOptions, enabledRules map[string]bool) []checker.CheckState {
+	var states []checker.CheckState
 	for _, rule := range s.definition.Rules {
 		if len(enabledRules) > 0 {
 			if enabled, ok := enabledRules[rule.Name()]; ok && !enabled {
@@ -306,8 +312,8 @@ func (s *Server) evaluateRules(ctx context.Context, obs ObservationGetter, opts 
 		}
 		ruleStates := rule.Evaluate(ctx, obs, opts)
 		if len(ruleStates) == 0 {
-			ruleStates = []CheckState{{
-				Status:  StatusUnknown,
+			ruleStates = []checker.CheckState{{
+				Status:  checker.StatusUnknown,
 				Message: fmt.Sprintf("rule %q returned no state", rule.Name()),
 			}}
 		}
@@ -320,9 +326,9 @@ func (s *Server) evaluateRules(ctx context.Context, obs ObservationGetter, opts 
 }
 
 func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
-	var req ExternalEvaluateRequest
+	var req checker.ExternalEvaluateRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ExternalEvaluateResponse{
+		writeJSON(w, http.StatusBadRequest, checker.ExternalEvaluateResponse{
 			Error: fmt.Sprintf("invalid request body: %v", err),
 		})
 		return
@@ -330,11 +336,11 @@ func (s *Server) handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	obs := &mapObservationGetter{data: req.Observations}
 	states := s.evaluateRules(r.Context(), obs, req.Options, req.EnabledRules)
-	writeJSON(w, http.StatusOK, ExternalEvaluateResponse{States: states})
+	writeJSON(w, http.StatusOK, checker.ExternalEvaluateResponse{States: states})
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
-	var req ExternalReportRequest
+	var req checker.ExternalReportRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": fmt.Sprintf("invalid request body: %v", err),
@@ -345,13 +351,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	accept := r.Header.Get("Accept")
 
 	if strings.Contains(accept, "text/html") {
-		reporter, ok := s.provider.(CheckerHTMLReporter)
+		reporter, ok := s.provider.(checker.CheckerHTMLReporter)
 		if !ok {
 			http.Error(w, "this checker does not support HTML reports", http.StatusNotImplemented)
 			return
 		}
 
-		html, err := reporter.GetHTMLReport(NewReportContext(req.Data, req.Related))
+		html, err := reporter.GetHTMLReport(checker.NewReportContext(req.Data, req.Related))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to generate HTML report: %v", err), http.StatusInternalServerError)
 			return
@@ -363,13 +369,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Default: JSON metrics.
-	reporter, ok := s.provider.(CheckerMetricsReporter)
+	reporter, ok := s.provider.(checker.CheckerMetricsReporter)
 	if !ok {
 		http.Error(w, "this checker does not support metrics reports", http.StatusNotImplemented)
 		return
 	}
 
-	metrics, err := reporter.ExtractMetrics(NewReportContext(req.Data, req.Related), time.Now())
+	metrics, err := reporter.ExtractMetrics(checker.NewReportContext(req.Data, req.Related), time.Now())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to extract metrics: %v", err),
@@ -380,16 +386,16 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, metrics)
 }
 
-// mapObservationGetter implements ObservationGetter backed by static maps.
+// mapObservationGetter implements checker.ObservationGetter backed by static maps.
 // Both fields are optional: Get reads from data, GetRelated reads from
 // related. Leaving related nil preserves the pre-existing "no lineage"
 // behavior used by the remote /evaluate path.
 type mapObservationGetter struct {
-	data    map[ObservationKey]json.RawMessage
-	related map[ObservationKey][]RelatedObservation
+	data    map[checker.ObservationKey]json.RawMessage
+	related map[checker.ObservationKey][]checker.RelatedObservation
 }
 
-func (g *mapObservationGetter) Get(ctx context.Context, key ObservationKey, dest any) error {
+func (g *mapObservationGetter) Get(ctx context.Context, key checker.ObservationKey, dest any) error {
 	raw, ok := g.data[key]
 	if !ok {
 		return fmt.Errorf("observation %q not available", key)
@@ -401,8 +407,8 @@ func (g *mapObservationGetter) Get(ctx context.Context, key ObservationKey, dest
 // when none were seeded. The remote /evaluate path leaves related nil
 // because ExternalEvaluateRequest does not currently carry cross-checker
 // lineage; the interactive /check path can seed it from sibling providers
-// declared via InteractiveRelatedProviders.
-func (g *mapObservationGetter) GetRelated(ctx context.Context, key ObservationKey) ([]RelatedObservation, error) {
+// declared via Siblings.
+func (g *mapObservationGetter) GetRelated(ctx context.Context, key checker.ObservationKey) ([]checker.RelatedObservation, error) {
 	return g.related[key], nil
 }
 
