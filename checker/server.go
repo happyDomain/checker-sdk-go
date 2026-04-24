@@ -380,9 +380,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, metrics)
 }
 
-// mapObservationGetter implements ObservationGetter backed by a static map.
+// mapObservationGetter implements ObservationGetter backed by static maps.
+// Both fields are optional: Get reads from data, GetRelated reads from
+// related. Leaving related nil preserves the pre-existing "no lineage"
+// behavior used by the remote /evaluate path.
 type mapObservationGetter struct {
-	data map[ObservationKey]json.RawMessage
+	data    map[ObservationKey]json.RawMessage
+	related map[ObservationKey][]RelatedObservation
 }
 
 func (g *mapObservationGetter) Get(ctx context.Context, key ObservationKey, dest any) error {
@@ -393,13 +397,13 @@ func (g *mapObservationGetter) Get(ctx context.Context, key ObservationKey, dest
 	return json.Unmarshal(raw, dest)
 }
 
-// GetRelated always returns nil in the remote /evaluate path: the host that
-// invokes /evaluate does not (currently) carry cross-checker related data in
-// ExternalEvaluateRequest. Consumers that need related observations must run
-// evaluation locally with a host-side ObservationContext that resolves
-// lineage.
+// GetRelated returns the pre-resolved related observations for key, or nil
+// when none were seeded. The remote /evaluate path leaves related nil
+// because ExternalEvaluateRequest does not currently carry cross-checker
+// lineage; the interactive /check path can seed it from sibling providers
+// declared via InteractiveRelatedProviders.
 func (g *mapObservationGetter) GetRelated(ctx context.Context, key ObservationKey) ([]RelatedObservation, error) {
-	return nil, nil
+	return g.related[key], nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

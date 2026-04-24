@@ -16,10 +16,12 @@ package checker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
+	"maps"
 	"net/http"
 	"time"
 )
@@ -104,14 +106,19 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	related := s.collectRelatedObservations(r.Context(), opts, data)
+
 	if s.definition != nil {
-		obs := &mapObservationGetter{data: map[ObservationKey]json.RawMessage{
-			s.provider.Key(): raw,
-		}}
+		obs := &mapObservationGetter{
+			data: map[ObservationKey]json.RawMessage{
+				s.provider.Key(): raw,
+			},
+			related: related,
+		}
 		result.States = s.evaluateRules(r.Context(), obs, opts, nil)
 	}
 
-	ctx := NewReportContext(raw, nil)
+	ctx := NewReportContext(raw, related)
 
 	if reporter, ok := s.provider.(CheckerHTMLReporter); ok {
 		html, rerr := reporter.GetHTMLReport(ctx)
@@ -132,6 +139,86 @@ func (s *Server) handleCheckSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderCheckResult(w, result)
+}
+
+// collectRelatedObservations runs sibling providers declared via
+// InteractiveRelatedProviders and returns their results keyed by the
+// sibling's observation key. Sibling errors are logged and skipped.
+func (s *Server) collectRelatedObservations(ctx context.Context, opts CheckerOptions, data any) map[ObservationKey][]RelatedObservation {
+	irp, ok := s.provider.(InteractiveRelatedProviders)
+	if !ok {
+		return nil
+	}
+	siblings := irp.RelatedProviders()
+	if len(siblings) == 0 {
+		return nil
+	}
+
+	var entries []DiscoveryEntry
+	if dp, ok := s.provider.(DiscoveryPublisher); ok {
+		e, err := dp.DiscoverEntries(data)
+		if err != nil {
+			log.Printf("interactive: DiscoverEntries failed: %v", err)
+		} else {
+			entries = e
+		}
+	}
+
+	related := make(map[ObservationKey][]RelatedObservation, len(siblings))
+	for _, sp := range siblings {
+		sOpts := cloneOptions(opts)
+		siblingID := ""
+		if dp, ok := sp.(CheckerDefinitionProvider); ok {
+			if def := dp.Definition(); def != nil {
+				siblingID = def.ID
+				if len(entries) > 0 {
+					fillDiscoveryEntryOption(sOpts, def, entries)
+				}
+			}
+		}
+		sData, err := sp.Collect(ctx, sOpts)
+		if err != nil {
+			log.Printf("interactive: sibling %q Collect failed: %v", sp.Key(), err)
+			continue
+		}
+		raw, err := json.Marshal(sData)
+		if err != nil {
+			log.Printf("interactive: sibling %q marshal failed: %v", sp.Key(), err)
+			continue
+		}
+		related[sp.Key()] = append(related[sp.Key()], RelatedObservation{
+			CheckerID:   siblingID,
+			Key:         sp.Key(),
+			Data:        raw,
+			CollectedAt: time.Now(),
+		})
+	}
+	return related
+}
+
+func cloneOptions(opts CheckerOptions) CheckerOptions {
+	out := make(CheckerOptions, len(opts))
+	maps.Copy(out, opts)
+	return out
+}
+
+// fillDiscoveryEntryOption mirrors the host's AutoFill wiring: it writes
+// entries into every option in def tagged AutoFill == AutoFillDiscoveryEntries.
+func fillDiscoveryEntryOption(opts CheckerOptions, def *CheckerDefinition, entries []DiscoveryEntry) {
+	scopes := [][]CheckerOptionDocumentation{
+		def.Options.AdminOpts,
+		def.Options.UserOpts,
+		def.Options.DomainOpts,
+		def.Options.ServiceOpts,
+		def.Options.RunOpts,
+	}
+	for _, scope := range scopes {
+		for _, f := range scope {
+			if f.AutoFill == AutoFillDiscoveryEntries {
+				opts[f.Id] = entries
+			}
+		}
+	}
 }
 
 func (s *Server) checkPageTitle() string {

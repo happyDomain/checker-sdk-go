@@ -243,3 +243,136 @@ func (b *bareInteractiveProvider) RenderForm() []CheckerOptionField {
 func (b *bareInteractiveProvider) ParseForm(r *http.Request) (CheckerOptions, error) {
 	return CheckerOptions{"domain": r.FormValue("domain")}, nil
 }
+
+type siblingProvider struct {
+	key        ObservationKey
+	id         string
+	entriesOpt string
+	gotOpts    CheckerOptions
+	payload    any
+}
+
+func (s *siblingProvider) Key() ObservationKey { return s.key }
+func (s *siblingProvider) Collect(ctx context.Context, opts CheckerOptions) (any, error) {
+	s.gotOpts = opts
+	return s.payload, nil
+}
+func (s *siblingProvider) Definition() *CheckerDefinition {
+	return &CheckerDefinition{
+		ID: s.id,
+		Options: CheckerOptionsDocumentation{
+			RunOpts: []CheckerOptionDocumentation{
+				{Id: s.entriesOpt, Type: "array", AutoFill: AutoFillDiscoveryEntries},
+			},
+		},
+	}
+}
+
+type primaryWithSibling struct {
+	key     ObservationKey
+	def     *CheckerDefinition
+	entries []DiscoveryEntry
+	sibling ObservationProvider
+}
+
+func (p *primaryWithSibling) Key() ObservationKey { return p.key }
+func (p *primaryWithSibling) Collect(ctx context.Context, opts CheckerOptions) (any, error) {
+	return map[string]string{"primary": "ok"}, nil
+}
+func (p *primaryWithSibling) Definition() *CheckerDefinition { return p.def }
+func (p *primaryWithSibling) RenderForm() []CheckerOptionField {
+	return []CheckerOptionField{{Id: "domain", Type: "string"}}
+}
+func (p *primaryWithSibling) ParseForm(r *http.Request) (CheckerOptions, error) {
+	return CheckerOptions{"domain": r.FormValue("domain")}, nil
+}
+func (p *primaryWithSibling) DiscoverEntries(data any) ([]DiscoveryEntry, error) {
+	return p.entries, nil
+}
+func (p *primaryWithSibling) RelatedProviders() []ObservationProvider {
+	return []ObservationProvider{p.sibling}
+}
+
+type relatedAssertRule struct {
+	key ObservationKey
+}
+
+func (r *relatedAssertRule) Name() string        { return "related_assert" }
+func (r *relatedAssertRule) Description() string { return "" }
+func (r *relatedAssertRule) Evaluate(ctx context.Context, obs ObservationGetter, opts CheckerOptions) []CheckState {
+	related, err := obs.GetRelated(ctx, r.key)
+	if err != nil {
+		return []CheckState{{Status: StatusError, Message: err.Error()}}
+	}
+	if len(related) == 0 {
+		return []CheckState{{Status: StatusCrit, Message: "no related observation"}}
+	}
+	return []CheckState{{Status: StatusOK, Message: "saw related observation"}}
+}
+
+func TestCheck_Submit_RunsSiblingAndExposesRelated(t *testing.T) {
+	sibling := &siblingProvider{
+		key:        "sibling_key",
+		id:         "sibling",
+		entriesOpt: "endpoints",
+		payload:    map[string]string{"sibling": "ok"},
+	}
+	entry := DiscoveryEntry{Type: "fake.v1", Ref: "r1"}
+	primary := &primaryWithSibling{
+		key: "primary_key",
+		def: &CheckerDefinition{
+			ID:    "primary",
+			Rules: []CheckRule{&relatedAssertRule{key: sibling.key}},
+		},
+		entries: []DiscoveryEntry{entry},
+		sibling: sibling,
+	}
+
+	srv := NewServer(primary)
+	defer srv.Close()
+
+	rec := postForm(srv.Handler(), "/check", url.Values{"domain": {"example.com"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /check = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "saw related observation") {
+		t.Errorf("rule did not see related observation; body:\n%s", body)
+	}
+
+	got, ok := sibling.gotOpts[sibling.entriesOpt].([]DiscoveryEntry)
+	if !ok {
+		t.Fatalf("sibling opts missing %q or wrong type: %#v", sibling.entriesOpt, sibling.gotOpts[sibling.entriesOpt])
+	}
+	if len(got) != 1 || got[0].Ref != entry.Ref {
+		t.Errorf("sibling saw entries %v, want [%v]", got, entry)
+	}
+
+	if v, _ := sibling.gotOpts["domain"].(string); v != "example.com" {
+		t.Errorf("sibling did not receive primary domain opt, got %q", v)
+	}
+}
+
+func TestCheck_Submit_NoSibling_LeavesRelatedEmpty(t *testing.T) {
+	p := &interactiveProvider{
+		testProvider: &testProvider{
+			key: "test",
+			definition: &CheckerDefinition{
+				ID:    "test",
+				Rules: []CheckRule{&relatedAssertRule{key: "other"}},
+			},
+		},
+		fields: []CheckerOptionField{{Id: "domain", Type: "string"}},
+	}
+	srv := NewServer(p)
+	defer srv.Close()
+
+	rec := postForm(srv.Handler(), "/check", url.Values{"domain": {"example.com"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /check = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "no related observation") {
+		t.Errorf("rule should have seen no related observation; body:\n%s", body)
+	}
+}
