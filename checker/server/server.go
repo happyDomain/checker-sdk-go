@@ -27,10 +27,12 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"git.happydns.org/checker-sdk-go/checker"
@@ -43,6 +45,10 @@ const maxRequestBodySize = 1 << 20
 // exponentially weighted moving averages reported in HealthResponse.LoadAvg.
 // 5 seconds matches the Unix kernel's loadavg cadence.
 const loadSampleInterval = 5 * time.Second
+
+// shutdownTimeout bounds how long ListenAndServe waits for in-flight
+// requests to drain after receiving SIGINT or SIGTERM.
+const shutdownTimeout = 10 * time.Second
 
 // EWMA smoothing factors for 1, 5, and 15-minute windows sampled every
 // loadSampleInterval. Derived as 1 - exp(-interval/window) so that the
@@ -166,11 +172,15 @@ func (s *Server) HandleFunc(pattern string, handler func(http.ResponseWriter, *h
 	s.mux.HandleFunc(pattern, handler)
 }
 
-// ListenAndServe starts the HTTP server on the given address.
+// ListenAndServe starts the HTTP server on the given address and blocks
+// until the server stops.
 //
-// ListenAndServe does not stop the background load-average sampler on return;
-// call Close to stop it. This is not required for process-scoped usage but is
-// recommended for tests and embedded lifecycles.
+// ListenAndServe installs a SIGINT/SIGTERM handler that triggers a graceful
+// shutdown: new connections are refused and in-flight requests are given up
+// to shutdownTimeout to complete. The background load-average sampler is
+// stopped via Close before returning. Callers who need their own signal
+// handling or shutdown semantics should use Handler() and run their own
+// http.Server instead.
 //
 // If the consumer's flag.Parse() set the SDK-registered -healthcheck flag,
 // ListenAndServe never starts the server: it probes /health on addr and calls
@@ -184,8 +194,43 @@ func (s *Server) ListenAndServe(addr string) error {
 		}
 		os.Exit(0)
 	}
+
+	srv := &http.Server{Addr: addr, Handler: requestLogger(s.mux)}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	shutdownErr := make(chan error, 1)
+	go func() {
+		sig, ok := <-sigCh
+		if !ok {
+			shutdownErr <- nil
+			return
+		}
+		log.Printf("checker received %s, shutting down (timeout %s)", sig, shutdownTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		shutdownErr <- srv.Shutdown(ctx)
+	}()
+
 	log.Printf("checker listening on %s", addr)
-	return http.ListenAndServe(addr, requestLogger(s.mux))
+	err := srv.ListenAndServe()
+	signal.Stop(sigCh)
+	close(sigCh)
+
+	if err == http.ErrServerClosed {
+		if sErr := <-shutdownErr; sErr != nil {
+			err = sErr
+		} else {
+			err = nil
+		}
+	}
+
+	if cErr := s.Close(); cErr != nil && err == nil {
+		err = cErr
+	}
+	return err
 }
 
 // Close stops the background load-average sampler goroutine. It is safe to
