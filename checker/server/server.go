@@ -26,6 +26,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -170,7 +171,19 @@ func (s *Server) HandleFunc(pattern string, handler func(http.ResponseWriter, *h
 // ListenAndServe does not stop the background load-average sampler on return;
 // call Close to stop it. This is not required for process-scoped usage but is
 // recommended for tests and embedded lifecycles.
+//
+// If the consumer's flag.Parse() set the SDK-registered -healthcheck flag,
+// ListenAndServe never starts the server: it probes /health on addr and calls
+// os.Exit(0) on success or os.Exit(1) on failure. This is what lets a
+// scratch-based Docker image use the binary itself as its HEALTHCHECK probe.
 func (s *Server) ListenAndServe(addr string) error {
+	if *healthcheckMode {
+		if err := runHealthcheck(addr); err != nil {
+			fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	log.Printf("checker listening on %s", addr)
 	return http.ListenAndServe(addr, requestLogger(s.mux))
 }
