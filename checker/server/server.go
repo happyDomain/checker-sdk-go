@@ -325,7 +325,8 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.provider.Collect(r.Context(), req.Options)
+	ctx := checker.WithEnabledRules(r.Context(), req.EnabledRules)
+	data, err := s.provider.Collect(ctx, req.Options)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, checker.ExternalCollectResponse{
 			Error: err.Error(),

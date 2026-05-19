@@ -421,10 +421,17 @@ type OptionsValidator interface {
 }
 
 // ExternalCollectRequest is sent to POST /collect on a remote checker endpoint.
+//
+// EnabledRules lets the host inform the provider which rules will be evaluated
+// downstream, so the provider can skip optional work (network calls, paid API
+// hits, …) for data that would not surface in any state. nil means "run
+// everything"; an explicit map with a rule name set to false means that rule
+// is off. Providers access the value via EnabledRulesFromContext(ctx).
 type ExternalCollectRequest struct {
-	Key     ObservationKey `json:"key"`
-	Target  CheckTarget    `json:"target"`
-	Options CheckerOptions `json:"options"`
+	Key          ObservationKey  `json:"key"`
+	Target       CheckTarget     `json:"target"`
+	Options      CheckerOptions  `json:"options"`
+	EnabledRules map[string]bool `json:"enabledRules,omitempty"`
 }
 
 // ExternalCollectResponse is returned by POST /collect on a remote checker endpoint.
