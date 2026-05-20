@@ -133,6 +133,7 @@ func New(provider checker.ObservationProvider) *Server {
 			s.definition = def
 			s.definition.BuildRulesInfo()
 			s.mux.HandleFunc("GET /definition", s.handleDefinition)
+			s.mux.HandleFunc("POST /definition", s.handlePrecheck)
 			s.mux.Handle("POST /evaluate", s.TrackWork(http.HandlerFunc(s.handleEvaluate)))
 		}
 	}
@@ -314,6 +315,38 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDefinition(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.definition)
+}
+
+// handlePrecheck answers POST /definition: it returns the same
+// definition body as GET /definition, plus a PrecheckFailures map
+// listing rules whose prerequisites are unmet for the submitted
+// options. Rules that do not implement checker.RulePrecheck, or whose
+// Precheck returned nil, are omitted from that map.
+func (s *Server) handlePrecheck(w http.ResponseWriter, r *http.Request) {
+	var req checker.RulePrecheckRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("invalid request body: %v", err),
+			})
+			return
+		}
+	}
+
+	failures := map[string]string{}
+	for _, rule := range s.definition.Rules {
+		pc, ok := rule.(checker.RulePrecheck)
+		if !ok {
+			continue
+		}
+		if err := pc.Precheck(r.Context(), req.Options); err != nil {
+			failures[rule.Name()] = err.Error()
+		}
+	}
+	writeJSON(w, http.StatusOK, checker.RulePrecheckResponse{
+		CheckerDefinition: s.definition,
+		PrecheckFailures:  failures,
+	})
 }
 
 func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {

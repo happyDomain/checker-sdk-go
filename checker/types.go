@@ -250,6 +250,34 @@ type CheckRuleWithOptions interface {
 	Options() CheckerOptionsDocumentation
 }
 
+// RulePrecheck is an optional interface a CheckRule can implement to
+// declare whether the current options are sufficient for the rule to
+// run. Return nil if runnable, or an error describing the missing
+// prerequisite (for example "missing API key"). The host calls this via
+// POST /definition to surface unavailable rules in the UI; it is never
+// invoked from Collect, so rules that need to short-circuit at run time
+// must keep their own self-guard.
+type RulePrecheck interface {
+	CheckRule
+	Precheck(ctx context.Context, opts CheckerOptions) error
+}
+
+// RulePrecheckRequest is the body accepted by POST /definition.
+type RulePrecheckRequest struct {
+	Options CheckerOptions `json:"options"`
+}
+
+// RulePrecheckResponse is the body returned by POST /definition. The
+// embedded *CheckerDefinition mirrors GET /definition so a client can
+// fetch the full definition and precheck results in one round-trip.
+// Keys in PrecheckFailures are rule names; values are the precheck
+// error messages. Rules that do not implement RulePrecheck, or whose
+// Precheck returned nil for the given options, are absent from the map.
+type RulePrecheckResponse struct {
+	*CheckerDefinition
+	PrecheckFailures map[string]string `json:"precheck_failures"`
+}
+
 // ObservationGetter provides access to observation data (used by CheckRule).
 // Get unmarshals observation data into dest (like json.Unmarshal).
 //

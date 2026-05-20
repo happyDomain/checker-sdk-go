@@ -667,3 +667,92 @@ func TestServer_NoDefinition_NoEvaluateEndpoint(t *testing.T) {
 		t.Error("POST /evaluate should not be available without CheckerDefinitionProvider")
 	}
 }
+
+// prereqRule implements RulePrecheck, failing when a named option is empty.
+type prereqRule struct {
+	name   string
+	optKey string
+	msg    string
+}
+
+func (r *prereqRule) Name() string        { return r.name }
+func (r *prereqRule) Description() string { return "" }
+func (r *prereqRule) Evaluate(ctx context.Context, obs checker.ObservationGetter, opts checker.CheckerOptions) []checker.CheckState {
+	return []checker.CheckState{{Status: checker.StatusOK}}
+}
+func (r *prereqRule) Precheck(ctx context.Context, opts checker.CheckerOptions) error {
+	if v, _ := opts[r.optKey].(string); v == "" {
+		return errors.New(r.msg)
+	}
+	return nil
+}
+
+func TestServer_Precheck(t *testing.T) {
+	gated := &prereqRule{name: "gated", optKey: "api_key", msg: "missing API key"}
+	open := &dummyRule{name: "open", desc: "no prereq"}
+	p := &testProvider{
+		key: "test",
+		definition: &checker.CheckerDefinition{
+			ID:    "test",
+			Rules: []checker.CheckRule{gated, open},
+		},
+	}
+	srv := newTestServer(p)
+	defer srv.Close()
+	handler := srv.Handler()
+
+	// GET /definition stays static — no precheck information surfaces here.
+	rec := doRequest(handler, "GET", "/definition", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /definition = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("precheck_failures")) {
+		t.Errorf("GET /definition leaked precheck_failures field: %s", rec.Body.String())
+	}
+
+	// POST /definition with empty opts: gated rule fails, open rule absent.
+	rec = doRequest(handler, "POST", "/definition", checker.RulePrecheckRequest{Options: checker.CheckerOptions{}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /definition (empty opts) = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var resp checker.RulePrecheckResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode POST /definition: %v", err)
+	}
+	if resp.CheckerDefinition == nil {
+		t.Fatalf("POST /definition response missing embedded CheckerDefinition")
+	}
+	if resp.ID != "test" {
+		t.Errorf("response ID = %q, want %q", resp.ID, "test")
+	}
+	if len(resp.RulesInfo) != 2 {
+		t.Errorf("response RulesInfo len = %d, want 2", len(resp.RulesInfo))
+	}
+	if got := resp.PrecheckFailures["gated"]; got != "missing API key" {
+		t.Errorf("PrecheckFailures[gated] = %q, want %q", got, "missing API key")
+	}
+	if _, ok := resp.PrecheckFailures["open"]; ok {
+		t.Errorf("PrecheckFailures[open] should be absent (no RulePrecheck impl), got %q", resp.PrecheckFailures["open"])
+	}
+	if len(resp.PrecheckFailures) != 1 {
+		t.Errorf("PrecheckFailures = %v, want exactly 1 entry", resp.PrecheckFailures)
+	}
+
+	// POST /definition with sufficient opts: empty failure map.
+	rec = doRequest(handler, "POST", "/definition", checker.RulePrecheckRequest{
+		Options: checker.CheckerOptions{"api_key": "secret"},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /definition (with opts) = %d, want %d", rec.Code, http.StatusOK)
+	}
+	resp = checker.RulePrecheckResponse{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode POST /definition: %v", err)
+	}
+	if resp.CheckerDefinition == nil || resp.ID != "test" {
+		t.Errorf("response missing definition: %+v", resp)
+	}
+	if len(resp.PrecheckFailures) != 0 {
+		t.Errorf("PrecheckFailures = %v, want empty when opts satisfy prereqs", resp.PrecheckFailures)
+	}
+}
