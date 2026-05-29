@@ -133,7 +133,7 @@ func New(provider checker.ObservationProvider) *Server {
 			s.definition = def
 			s.definition.BuildRulesInfo()
 			s.mux.HandleFunc("GET /definition", s.handleDefinition)
-			s.mux.HandleFunc("POST /definition", s.handlePrecheck)
+			s.mux.Handle("POST /definition", s.TrackWork(http.HandlerFunc(s.handlePrecheck)))
 			s.mux.Handle("POST /evaluate", s.TrackWork(http.HandlerFunc(s.handleEvaluate)))
 		}
 	}
@@ -343,10 +343,23 @@ func (s *Server) handlePrecheck(w http.ResponseWriter, r *http.Request) {
 			failures[rule.Name()] = err.Error()
 		}
 	}
-	writeJSON(w, http.StatusOK, checker.RulePrecheckResponse{
+	resp := checker.RulePrecheckResponse{
 		CheckerDefinition: s.definition,
 		PrecheckFailures:  failures,
-	})
+	}
+	if en, ok := s.provider.(checker.CheckEnabler); ok {
+		eligible, reason, err := en.IsEligible(r.Context(), req.Options)
+		if err != nil {
+			// Eligibility undetermined: leave Eligible nil so the host fails
+			// open (shows the checker), but surface the error for diagnostics.
+			log.Printf("IsEligible failed: %v", err)
+			resp.EligibilityReason = err.Error()
+		} else {
+			resp.Eligible = &eligible
+			resp.EligibilityReason = reason
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {

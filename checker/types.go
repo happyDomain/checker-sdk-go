@@ -262,6 +262,31 @@ type RulePrecheck interface {
 	Precheck(ctx context.Context, opts CheckerOptions) error
 }
 
+// CheckEnabler is an optional interface an ObservationProvider can implement
+// to declare, from the actual target data, whether running this checker is
+// meaningful at all.
+//
+// It complements the two existing gates:
+//   - CheckerAvailability is a static, registration-time scope/service-type
+//     filter; it never sees the target's data.
+//   - RulePrecheck is a per-rule, options-only check ("missing API key").
+//
+// CheckEnabler is whole-checker and data-driven. IsEligible receives the same
+// CheckerOptions as Collect, including the autofilled domain_name / zone /
+// service payloads (read them with GetOption), and may perform light I/O
+// (e.g. a DNSKEY lookup) to decide.
+//
+// Return (true, "", nil) to run the checker, or (false, reason, nil) with a
+// short human-readable reason ("not a reverse zone", "DNSSEC not enabled")
+// to skip it. Return a non-nil error only when eligibility could not be
+// determined (transient I/O failure); the host treats that as "unknown" and
+// fails open (shows the checker) rather than as a definitive skip.
+//
+// Detect support with a type assertion: _, ok := provider.(CheckEnabler)
+type CheckEnabler interface {
+	IsEligible(ctx context.Context, opts CheckerOptions) (eligible bool, reason string, err error)
+}
+
 // RulePrecheckRequest is the body accepted by POST /definition.
 type RulePrecheckRequest struct {
 	Options CheckerOptions `json:"options"`
@@ -276,6 +301,18 @@ type RulePrecheckRequest struct {
 type RulePrecheckResponse struct {
 	*CheckerDefinition
 	PrecheckFailures map[string]string `json:"precheck_failures"`
+
+	// Eligible reports whether this checker is meaningful for the submitted
+	// target, as decided by the provider's CheckEnabler (if implemented). It
+	// is nil when the checker does not implement CheckEnabler, or when
+	// IsEligible could not determine eligibility (its error was non-nil). A
+	// non-nil false means the checker is definitively not applicable to this
+	// target; the host should hide it unless Eligible != nil && !*Eligible.
+	Eligible *bool `json:"eligible,omitempty"`
+
+	// EligibilityReason explains a false Eligible, or carries the lookup error
+	// message when eligibility could not be determined. Empty otherwise.
+	EligibilityReason string `json:"eligibility_reason,omitempty"`
 }
 
 // ObservationGetter provides access to observation data (used by CheckRule).

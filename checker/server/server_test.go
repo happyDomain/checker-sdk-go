@@ -687,6 +687,110 @@ func (r *prereqRule) Precheck(ctx context.Context, opts checker.CheckerOptions) 
 	return nil
 }
 
+// enablerProvider is a minimal ObservationProvider + CheckerDefinitionProvider
+// that also implements CheckEnabler, returning whatever isEligibleFn yields.
+type enablerProvider struct {
+	key          checker.ObservationKey
+	definition   *checker.CheckerDefinition
+	isEligibleFn func(ctx context.Context, opts checker.CheckerOptions) (bool, string, error)
+}
+
+func (p *enablerProvider) Key() checker.ObservationKey { return p.key }
+func (p *enablerProvider) Collect(ctx context.Context, opts checker.CheckerOptions) (any, error) {
+	return map[string]string{"result": "ok"}, nil
+}
+func (p *enablerProvider) Definition() *checker.CheckerDefinition { return p.definition }
+func (p *enablerProvider) IsEligible(ctx context.Context, opts checker.CheckerOptions) (bool, string, error) {
+	return p.isEligibleFn(ctx, opts)
+}
+
+func TestServer_Precheck_Eligibility(t *testing.T) {
+	tests := []struct {
+		name       string
+		fn         func(ctx context.Context, opts checker.CheckerOptions) (bool, string, error)
+		wantNil    bool   // expect Eligible == nil
+		wantElig   bool   // value of *Eligible when not nil
+		wantReason string // expected EligibilityReason
+	}{
+		{
+			name:     "eligible true",
+			fn:       func(context.Context, checker.CheckerOptions) (bool, string, error) { return true, "", nil },
+			wantElig: true,
+		},
+		{
+			name:       "eligible false with reason",
+			fn:         func(context.Context, checker.CheckerOptions) (bool, string, error) { return false, "not a reverse zone", nil },
+			wantElig:   false,
+			wantReason: "not a reverse zone",
+		},
+		{
+			name:       "error fails open",
+			fn:         func(context.Context, checker.CheckerOptions) (bool, string, error) { return false, "", errors.New("lookup timeout") },
+			wantNil:    true,
+			wantReason: "lookup timeout",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &enablerProvider{
+				key:          "test",
+				definition:   &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}},
+				isEligibleFn: tc.fn,
+			}
+			srv := New(p)
+			defer srv.Close()
+
+			rec := doRequest(srv.Handler(), "POST", "/definition", checker.RulePrecheckRequest{Options: checker.CheckerOptions{}}, nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("POST /definition = %d, want %d", rec.Code, http.StatusOK)
+			}
+			var resp checker.RulePrecheckResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if tc.wantNil {
+				if resp.Eligible != nil {
+					t.Errorf("Eligible = %v, want nil", *resp.Eligible)
+				}
+			} else {
+				if resp.Eligible == nil {
+					t.Fatalf("Eligible = nil, want %v", tc.wantElig)
+				}
+				if *resp.Eligible != tc.wantElig {
+					t.Errorf("Eligible = %v, want %v", *resp.Eligible, tc.wantElig)
+				}
+			}
+			if resp.EligibilityReason != tc.wantReason {
+				t.Errorf("EligibilityReason = %q, want %q", resp.EligibilityReason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestServer_Precheck_NoEnabler verifies that a provider not implementing
+// CheckEnabler yields no eligibility fields (Eligible nil, reason empty).
+func TestServer_Precheck_NoEnabler(t *testing.T) {
+	p := &testProvider{key: "test", definition: &checker.CheckerDefinition{ID: "test", Rules: []checker.CheckRule{}}}
+	srv := newTestServer(p)
+	defer srv.Close()
+
+	rec := doRequest(srv.Handler(), "POST", "/definition", checker.RulePrecheckRequest{Options: checker.CheckerOptions{}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /definition = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("eligible")) {
+		t.Errorf("response leaked eligible field for non-enabler provider: %s", rec.Body.String())
+	}
+	var resp checker.RulePrecheckResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Eligible != nil {
+		t.Errorf("Eligible = %v, want nil for non-enabler provider", *resp.Eligible)
+	}
+}
+
 func TestServer_Precheck(t *testing.T) {
 	gated := &prereqRule{name: "gated", optKey: "api_key", msg: "missing API key"}
 	open := &dummyRule{name: "open", desc: "no prereq"}
